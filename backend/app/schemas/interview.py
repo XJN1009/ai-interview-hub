@@ -71,6 +71,8 @@ class InterviewOut(BaseModel):
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
     created_at: datetime
+    remaining_seconds: Optional[int] = None  # 服务端口径整场剩余秒数（未开始为 None）
+    answered_count: int = 0                  # 已评分题数
     questions: List[InterviewQuestionOut] = []
     current_question: Optional[InterviewQuestionOut] = None
 
@@ -90,6 +92,11 @@ class AnswerEvaluationOut(BaseModel):
     suggestions: List[str]
     next_action: str  # FOLLOW_UP, DEEP, BASIC, CHANGE_TOPIC, FINISH
     next_question: Optional[InterviewQuestionOut] = None
+    is_followup: bool = False          # 下一题是否为 AI 评分触发的自适应追问题
+    is_finished: bool = False          # 是否已答完全部题目（服务端判定）
+    report_id: Optional[int] = None    # 自动结算生成的报告 ID
+    remaining_seconds: Optional[int] = None  # 服务端口径的整场剩余秒数
+    total_questions: Optional[int] = None    # 追问加题后的最新总题数
 
 class InterviewReportOut(BaseModel):
     id: int

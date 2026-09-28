@@ -18,3 +18,12 @@
   - AI 协同：题库缺口或关闭题库时回退 AI 实时出题并兜底参考答案；评分支持以参考答案要点作为锚点；REST 与 WebSocket 两条通道一致
   - 前端：创建页题库开关与考卷预览弹窗；面试间题型胶囊、逐题计时、来源标签与真实用时上报；报告页题型标签与参考答案对照
   - 验证：44 项端到端断言全部通过（backend/scripts/test_question_bank.py），真实 LLM 全链路与前端 UI 均验证通过
+
+## 2026-09-28
+- 模拟面试正确性修复（A 类问题 5 项，全部完成）：
+  - 会话状态机：新增 `app/core/state_machine.py` 集中声明合法迁移（READY→IN_PROGRESS⇄PAUSED→COMPLETED/CANCELLED），非法迁移入口拦截返回 409——重复开始、重复提交同题（不再静默覆盖重评）、结算/中止后再作答或交卷均被拒绝；新增 `POST /interviews/{id}/abort` 中止端点（不生成报告，已答部分保留可查）
+  - 双通道统一：抽取 REST 与 WebSocket 共用的答题/推进/结算核心服务 `app/services/interview_core.py`，WS 不再重复创建评分记录；能力沉淀由写死 "Redis" 改为最后作答的真实技能名；结算幂等
+  - 自适应追问真实生效：评分返回的 next_action（FOLLOW_UP/DEEP 升难、BASIC/SIMPLIFY 降难）驱动从题库抽取同技能不同难度的追问题插入卷面，后续题号后移、总题数 +1（每场上限 2 次，题库无合适题自动放弃）；卷面快照记录 followup_count，前端提示"AI 面试官追加了针对性问题"
+  - 整场计时服务端化：以 started_at 计算 remaining_seconds 并在 start/resume/answer/详情接口下发，刷新页面不再重置；面试间时间归零自动交卷生成报告；最后一题答完由服务端自动结算并直接返回 report_id
+  - 假数据清理：面试列表无报告时 score 返回 null（前端显示"未生成"）；报告接口未结算时返回 404 而非写死的 82 分假报告；无任何作答交卷被 409 拒绝
+  - 验证：test_question_bank.py 重写覆盖新行为共 44 项断言全部通过（含追问升难/降难、409 拦截、abort、自动结算）；真实 LLM 实机全链路验证通过；前端构建（vue-tsc）通过

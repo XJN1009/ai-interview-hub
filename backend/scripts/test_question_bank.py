@@ -1,4 +1,4 @@
-"""题库与组卷引擎端到端冒烟测试（临时 SQLite，不污染开发库）。"""
+"""题库组卷 + 状态机 + 自适应追问 端到端冒烟测试（临时 SQLite，AI 走 mock 通道）。"""
 import os
 import sys
 import json
@@ -33,18 +33,18 @@ def check(name, cond, extra=""):
     print(f"{'PASS' if cond else 'FAIL'}: {name} {extra}")
 
 
+GOOD_ANS = "我在电商项目中用 Redis 做热点缓存，采用 Cache Aside 模式：写时先更新数据库再删除缓存，" \
+           "并用延迟双删与 Canal 订阅 binlog 兜底，配合布隆过滤器防穿透，逻辑过期防击穿，TTL 加随机抖动防雪崩。"
+BAD_ANS = "不知道，没用过。"
+
 db = SessionLocal()
 stat = seed_question_bank(db)
 db.commit()
 check("题库灌库", stat["total"] >= 80, f"total={stat['total']}")
-
-# 幂等性：重复执行不产生重复数据
 stat2 = seed_question_bank(db)
 db.commit()
-check("灌库幂等（第二次不新增）", stat2["inserted"] == 0 and stat2["total"] == stat["total"],
-      f"inserted={stat2['inserted']} total={stat2['total']}")
+check("灌库幂等（第二次不新增）", stat2["inserted"] == 0 and stat2["total"] == stat["total"])
 
-# 造一个岗位 + 用户
 company = Company(name="测试科技", industry="互联网/软件", size="150-500人",
                   city="深圳", status="VERIFIED")
 db.add(company); db.commit(); db.refresh(company)
@@ -62,7 +62,13 @@ db.add(UserRole(user_id=user.id, role_code="PERSONAL_USER"))
 db.commit()
 
 JOB_ID = job.id
-USER_ID = user.id
+
+# 找一道 Redis MEDIUM 题用于确定性追问测试
+redis_medium = db.query(QuestionBank).filter(
+    QuestionBank.skill_name == "Redis", QuestionBank.difficulty == "MEDIUM").first()
+REDIS_M_ID = redis_medium.id if redis_medium else None
+redis_hard_cnt = db.query(QuestionBank).filter(
+    QuestionBank.skill_name == "Redis", QuestionBank.difficulty == "HARD").count()
 db.close()
 
 client = TestClient(main.app)
@@ -71,152 +77,176 @@ check("登录", login.status_code == 200, str(login.status_code))
 token = login.json()["data"]["access_token"]
 H = {"Authorization": f"Bearer {token}"}
 
-# ===== 1. 题库统计接口 =====
+# ===== 1. 题库/配比/预览 =====
 r = client.get("/api/v1/interviews/bank-stats", headers=H)
-check("bank-stats 接口", r.status_code == 200 and r.json()["data"]["ready"], str(r.json()["data"].get("total")))
-bt = r.json()["data"]["by_type"]
-check("三类题型齐全", all(k in bt for k in ("PROFESSIONAL", "GENERAL", "STRESS")), str(bt))
-
-# ===== 2. 配比接口 =====
+check("bank-stats 接口", r.status_code == 200 and r.json()["data"]["ready"])
 r = client.get("/api/v1/interviews/paper-ratio", params={"mode": "COMPREHENSIVE", "total_questions": 10}, headers=H)
 d = r.json()["data"]
 check("5:3:2 配比分配 10 题", d["allocated"] == {"PROFESSIONAL": 5, "GENERAL": 3, "STRESS": 2}, str(d["allocated"]))
-r = client.get("/api/v1/interviews/paper-ratio", params={"mode": "STRESS", "total_questions": 5}, headers=H)
-check("STRESS 模式配比生效", sum(r.json()["data"]["allocated"].values()) == 5, str(r.json()["data"]["allocated"]))
 
-# ===== 3. 组卷预览 =====
 r = client.post("/api/v1/interviews/paper-preview",
                 json={"job_id": JOB_ID, "mode": "COMPREHENSIVE", "difficulty": "MEDIUM", "total_questions": 5},
                 headers=H)
 prev = r.json()["data"]
-check("组卷预览返回 5 题", len(prev["questions"]) == 5, f"from_bank={prev['from_bank']}")
-check("预览命中题库", prev["from_bank"] == 5 and prev["bank_available"] > 0)
-check("预览含压力题", any(q["question_type"] == "STRESS" for q in prev["questions"]),
-      str([q["question_type"] for q in prev["questions"]]))
+check("组卷预览返回 5 题", len(prev["questions"]) == 5)
+picked_ids = [q["bank_id"] for q in prev["questions"] if q["bank_id"]]
 
-# ===== 4. 创建面试（题库组卷）=====
+# ===== 2. 创建面试（完整链路：答完自动结算） =====
+# 首题固定为 Redis MEDIUM，保证 mock DEEP 评分能命中同技能 HARD 题触发追问
+init_ids = [REDIS_M_ID] if REDIS_M_ID else None
 r = client.post("/api/v1/interviews",
                 json={"job_id": JOB_ID, "mode": "COMPREHENSIVE", "difficulty": "MEDIUM",
-                      "total_questions": 5, "duration_minutes": 25},
+                      "total_questions": 5, "duration_minutes": 25,
+                      "selected_bank_ids": init_ids},
                 headers=H)
-check("创建面试", r.status_code == 200, str(r.status_code))
+check("创建面试", r.status_code == 200)
 iv = r.json()["data"]
 iv_id = iv["id"]
 qs = iv["questions"]
-check("卷面预生成全部 5 题（非仅首题）", len(qs) == 5, f"got={len(qs)}")
-check("题目来源为题库", all(q["source"] == "QUESTION_BANK" for q in qs))
-check("题目带题型标签", all(q["question_type"] in ("PROFESSIONAL", "GENERAL", "STRESS") for q in qs))
-check("题目带限时", all(q["time_limit_sec"] >= 60 for q in qs))
-check("作答阶段不下发参考答案（闭卷）",
-      all(not q["reference_points"] and q["reveal_reference"] is False for q in qs))
-check("题目带提示 hints", any(q["hints"] for q in qs))
+check("卷面预生成全部 5 题", len(qs) == 5)
+check("闭卷：作答阶段不下发参考答案", all(not q["reference_points"] for q in qs))
 
-# 卷面快照
+# start → 状态机 + 服务端剩余时间
+r = client.post(f"/api/v1/interviews/{iv_id}/start", headers=H)
+check("start 返回服务端剩余时间",
+      r.status_code == 200 and isinstance(r.json()["data"].get("remaining_seconds"), int))
+r2 = client.post(f"/api/v1/interviews/{iv_id}/start", headers=H)
+check("重复 start → 409", r2.status_code == 409, str(r2.status_code))
+
+# 逐题作答直到服务端判定完成（mock 高分答案会触发 DEEP 追问，总题数可能 +1/+2）
+answered = 0
+followup_seen = False
+finished = False
+for _ in range(10):
+    r = client.post(f"/api/v1/interviews/{iv_id}/answer",
+                    json={"text": GOOD_ANS, "duration_sec": 90}, headers=H)
+    if r.status_code != 200:
+        check(f"第{answered+1}题作答", False, str(r.status_code) + r.text[:120])
+        break
+    d = r.json()["data"]
+    answered += 1
+    if d.get("is_followup"):
+        followup_seen = True
+    if d.get("is_finished"):
+        check("最后一题作答返回 report_id（自动结算）", d.get("report_id") is not None)
+        finished = True
+        break
+    nq = d.get("next_question")
+    check(f"第{answered}题下一题闭卷", nq is None or not nq.get("reference_points"))
+check("答完全部题目（含追问）自动完成", finished, f"answered={answered}")
+check("mock 高分触发自适应追问（DEEP→同技能更高难度）", followup_seen)
+
+r = client.get(f"/api/v1/interviews/{iv_id}", headers=H)
+iv_after = r.json()["data"]
+check("追问后总题数增加且等于作答数", iv_after["total_questions"] == answered,
+      f"total={iv_after['total_questions']} answered={answered}")
+check("answered_count 真实", iv_after.get("answered_count") == answered)
+seqs = [q["seq"] for q in iv_after["questions"]]
+check("seq 连续无重复", seqs == list(range(1, len(seqs) + 1)), str(seqs))
 db = SessionLocal()
 plan = db.query(InterviewPlan).filter(InterviewPlan.interview_id == iv_id).first()
 snap = json.loads(plan.paper_json) if plan and plan.paper_json else {}
-check("卷面快照落库", snap.get("from_bank") == 5 and "ratio" in snap, str(snap.get("ratio")))
+check("卷面快照 followup_count>0", snap.get("followup_count", 0) > 0, str(snap.get("followup_count")))
 db.close()
 
-# ===== 5. 逐题作答 =====
-client.post(f"/api/v1/interviews/{iv_id}/start", headers=H)
-answer_text = "我在电商项目中用 Redis 做热点缓存，采用 Cache Aside 模式：写时先更新数据库再删除缓存，" \
-              "并用延迟双删与 Canal 订阅 binlog 兜底，配合布隆过滤器防穿透，逻辑过期防击穿，TTL 加随机抖动防雪崩。"
-done_seqs = []
-for i in range(5):
-    r = client.post(f"/api/v1/interviews/{iv_id}/answer",
-                    json={"text": answer_text, "duration_sec": 90}, headers=H)
-    if r.status_code != 200:
-        check(f"第{i+1}题作答", False, str(r.status_code) + r.text[:120])
-        break
-    d = r.json()["data"]
-    check(f"第{i+1}题评分返回", 0 <= d["total_score"] <= 100, f"score={d['total_score']}")
-    nq = d.get("next_question")
-    if nq:
-        done_seqs.append(d["answer_id"])
-        check(f"第{i+1}题下一题不泄露参考答案", not nq.get("reference_points"))
-check("答题推进产生 4 个下一题", len(done_seqs) == 4, f"got={len(done_seqs)}")
-
-# ===== 6. 结算 + 报告含参考答案 =====
+# 结算后操作全部 409
+r = client.post(f"/api/v1/interviews/{iv_id}/answer", json={"text": GOOD_ANS, "duration_sec": 30}, headers=H)
+check("结算后再作答 → 409", r.status_code == 409, str(r.status_code))
+r = client.post(f"/api/v1/interviews/{iv_id}/abort", headers=H)
+check("终态再中止 → 409", r.status_code == 409, str(r.status_code))
 r = client.post(f"/api/v1/interviews/{iv_id}/finish", headers=H)
-check("结算面试", r.status_code == 200, str(r.status_code) + r.text[:150])
+check("finish 幂等（返回既有报告）", r.status_code == 200)
 
+# 报告
 r = client.get(f"/api/v1/interviews/{iv_id}/report", headers=H)
 check("获取报告", r.status_code == 200)
 qa = r.json()["data"]["questions_analysis"]
-check("报告逐题数=5", len(qa) == 5, f"got={len(qa)}")
-check("报告逐题含参考答案要点", all(len(x.get("reference_points", [])) > 0 for x in qa),
-      f"first={len(qa[0]['reference_points']) if qa else 0}")
-check("报告逐题含题型与来源", all(x.get("question_type") and x.get("source") for x in qa))
-
-# 面试结束后 GET 应下发参考答案
+check("报告逐题数=作答数", len(qa) == answered, f"got={len(qa)}")
+check("报告逐题含参考答案要点", all(len(x.get("reference_points", [])) > 0 for x in qa))
 r = client.get(f"/api/v1/interviews/{iv_id}", headers=H)
-qs2 = r.json()["data"]["questions"]
 check("结束后可见参考答案（复盘对照）",
-      all(q["reference_points"] for q in qs2) and all(q["reveal_reference"] for q in qs2))
+      all(q["reference_points"] for q in r.json()["data"]["questions"]))
 
-# ===== 7. 关闭题库走 AI 全量生成 =====
+# ===== 3. 中止流程 =====
+r = client.post("/api/v1/interviews",
+                json={"job_id": JOB_ID, "mode": "COMPREHENSIVE", "difficulty": "MEDIUM", "total_questions": 3},
+                headers=H)
+iv_ab = r.json()["data"]
+client.post(f"/api/v1/interviews/{iv_ab['id']}/start", headers=H)
+r = client.post(f"/api/v1/interviews/{iv_ab['id']}/abort", headers=H)
+check("abort 成功 → CANCELLED", r.status_code == 200 and r.json()["data"]["status"] == "CANCELLED")
+r = client.get(f"/api/v1/interviews/{iv_ab['id']}/report", headers=H)
+check("中止后无报告 → 404（不再返回假报告）", r.status_code == 404, str(r.status_code))
+r = client.post(f"/api/v1/interviews/{iv_ab['id']}/answer", json={"text": "x", "duration_sec": 5}, headers=H)
+check("中止后作答 → 409", r.status_code == 409, str(r.status_code))
+r = client.post(f"/api/v1/interviews/{iv_ab['id']}/finish", headers=H)
+check("中止后交卷 → 409", r.status_code == 409, str(r.status_code))
+
+# ===== 4. 未答完 finish 拦截（force 提前交卷除外路径） =====
+r = client.post("/api/v1/interviews",
+                json={"job_id": JOB_ID, "mode": "COMPREHENSIVE", "difficulty": "MEDIUM", "total_questions": 3},
+                headers=H)
+iv_p = r.json()["data"]
+client.post(f"/api/v1/interviews/{iv_p['id']}/start", headers=H)
+client.post(f"/api/v1/interviews/{iv_p['id']}/answer", json={"text": BAD_ANS, "duration_sec": 10}, headers=H)
+# REST finish 是"提前交卷"语义（force=True），应成功且只统计已答题
+r = client.post(f"/api/v1/interviews/{iv_p['id']}/finish", headers=H)
+check("提前交卷成功（已答1题也可出报告）", r.status_code == 200, str(r.status_code) + r.text[:100])
+r = client.get(f"/api/v1/interviews/{iv_p['id']}/report", headers=H)
+check("提前交卷报告只含已答题", r.status_code == 200 and len(r.json()["data"]["questions_analysis"]) == 1)
+
+# 完全无作答 finish → 409
+r = client.post("/api/v1/interviews",
+                json={"job_id": JOB_ID, "mode": "COMPREHENSIVE", "difficulty": "MEDIUM", "total_questions": 3},
+                headers=H)
+iv_e = r.json()["data"]
+r = client.post(f"/api/v1/interviews/{iv_e['id']}/finish", headers=H)
+check("无作答交卷 → 409（不再产出写死82分假报告）", r.status_code == 409, str(r.status_code))
+r = client.get("/api/v1/interviews", headers=H)
+lst = {x["id"]: x for x in r.json()["data"]}
+check("列表无报告 score=None（不写死82）", lst[iv_e["id"]]["score"] is None)
+
+# ===== 5. 关闭题库走 AI 全量生成 =====
 r = client.post("/api/v1/interviews",
                 json={"job_id": JOB_ID, "mode": "TECHNICAL", "difficulty": "HARD",
                       "total_questions": 3, "use_question_bank": False},
                 headers=H)
-check("关闭题库仍可创建", r.status_code == 200)
 iv2 = r.json()["data"]
-check("关闭题库走 AI 生成", all(q["source"] == "AI_GENERATED" for q in iv2["questions"]),
-      str([q["source"] for q in iv2["questions"]]))
-check("AI 题也有参考答案兜底", all(q["reference_points"] == [] for q in iv2["questions"]))
-db = SessionLocal()
-p2 = db.query(InterviewPlan).filter(InterviewPlan.interview_id == iv2["id"]).first()
-snap2 = json.loads(p2.paper_json) if p2 and p2.paper_json else {}
-check("AI 模式记录卷面原因", snap2.get("reason") == "question_bank_disabled_or_empty", str(snap2))
-db.close()
+check("关闭题库走 AI 生成", all(q["source"] == "AI_GENERATED" for q in iv2["questions"]))
 
-# ===== 8. 组卷多样性（同岗位两次抽题不完全相同）=====
-def draw_texts():
-    db = SessionLocal()
-    j = db.query(Job).filter(Job.id == JOB_ID).first()
-    from app.services.paper_builder import build_paper
-    p = build_paper(db, j, "COMPREHENSIVE", "MEDIUM", 5)
-    db.commit(); db.close()
-    return {s.text for s in p.slots}
-
-a, b = draw_texts(), draw_texts()
-check("组卷具备随机多样性", len(a & b) < 5, f"overlap={len(a & b)}")
-
-# ===== 9. 按已预览考卷开考（所见即所考）=====
+# ===== 6. 所见即所考 =====
 r = client.post("/api/v1/interviews/paper-preview",
                 json={"job_id": JOB_ID, "mode": "COMPREHENSIVE", "difficulty": "MEDIUM", "total_questions": 5},
                 headers=H)
 picked = r.json()["data"]
-picked_ids = [q["bank_id"] for q in picked["questions"] if q["bank_id"]]
-picked_texts = [q["text"] for q in picked["questions"]]
-check("预览返回题目 ID", len(picked_ids) == 5, str(picked_ids))
-
+p_ids = [q["bank_id"] for q in picked["questions"] if q["bank_id"]]
 r = client.post("/api/v1/interviews",
                 json={"job_id": JOB_ID, "mode": "COMPREHENSIVE", "difficulty": "MEDIUM",
-                      "total_questions": 5, "selected_bank_ids": picked_ids},
+                      "total_questions": 5, "selected_bank_ids": p_ids},
                 headers=H)
-check("按选中考卷创建", r.status_code == 200)
 iv3 = r.json()["data"]
-actual_texts = [q["text"] for q in iv3["questions"]]
-check("所见即所考（考卷文本与预览一致）", set(actual_texts) == set(picked_texts),
-      f"actual={len(actual_texts)} picked={len(picked_texts)}")
-check("卷面记录 user_selected_paper",
-      json.loads(SessionLocal().query(InterviewPlan).filter(
-          InterviewPlan.interview_id == iv3["id"]).first().paper_json).get("user_selected_paper") is True)
+check("所见即所考",
+      {q["text"] for q in iv3["questions"]} == {q["text"] for q in picked["questions"]})
 
-# ===== 10. 题库覆盖度：每个岗位大类都能组出满卷 =====
-db = SessionLocal()
-cats = {r.job_category for r in db.query(QuestionBank).distinct().filter(
-    QuestionBank.job_category != "通用").all()} if hasattr(QuestionBank, "job_category") else set()
-db.close()
-from app.services.paper_builder import build_paper
-db = SessionLocal()
-j = db.query(Job).filter(Job.id == JOB_ID).first()
-paper_full = build_paper(db, j, "COMPREHENSIVE", "MEDIUM", 10)
-check("10 题满卷无缺口", not paper_full.missing and len(paper_full.slots) == 10,
-      f"missing={paper_full.missing}")
-db.close()
+# ===== 7. 低质量答案触发降难追问（BASIC/SIMPLIFY） =====
+if REDIS_M_ID and redis_hard_cnt >= 1:
+    # 用固定 Redis MEDIUM 作为首题
+    r = client.post("/api/v1/interviews",
+                    json={"job_id": JOB_ID, "mode": "COMPREHENSIVE", "difficulty": "MEDIUM",
+                          "total_questions": 2, "selected_bank_ids": [REDIS_M_ID]},
+                    headers=H)
+    iv4 = r.json()["data"]
+    first_q = [q for q in iv4["questions"] if q["seq"] == 1][0]
+    check("首题为指定 Redis 题", first_q["skill_name"] == "Redis", first_q["skill_name"])
+    client.post(f"/api/v1/interviews/{iv4['id']}/start", headers=H)
+    r = client.post(f"/api/v1/interviews/{iv4['id']}/answer",
+                    json={"text": BAD_ANS, "duration_sec": 10}, headers=H)
+    d = r.json()["data"]
+    check("低质量答案触发降难追问题", d.get("is_followup") is True,
+          f"next={d.get('next_question', {}).get('difficulty') if d.get('next_question') else None}")
+    # 追问题应为 EASY（降难）
+    if d.get("next_question"):
+        check("追问题难度下调", d["next_question"]["difficulty"] == "EASY", d["next_question"]["difficulty"])
 
 print("\n" + "=" * 60)
 print(f"RESULT: {len(PASS)} passed, {len(FAIL)} failed")

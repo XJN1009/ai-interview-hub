@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.deps import require_auth, log_operation
+from app.core import state_machine
 from app.models.user import User
 from app.models.job import Job
 from app.models.interview import (
@@ -13,11 +14,15 @@ from app.models.interview import (
     AnswerEvaluation, InterviewReport
 )
 from app.models.resume import Resume
-from app.models.profile import CompetencyHistory, UserCompetency
 from app.models.question import QuestionBank
 from app.services.paper_builder import (
     build_paper, paper_from_bank_ids, collect_job_skills, allocate_counts, resolve_ratio,
     PROFESSIONAL, GENERAL, STRESS, Paper
+)
+from app.services.interview_core import (
+    build_jd_text, build_resume_context, load_interview_context,
+    build_ai_reference_points, get_remaining_seconds,
+    submit_answer_core, finalize_interview
 )
 from app.schemas.common import ResponseModel
 from app.schemas.interview import (
@@ -44,15 +49,15 @@ FALLBACK_QUESTIONS = [
 ]
 
 
-def build_ai_reference_points(job_title: str, question_text: str) -> List[str]:
-    """AI 动态生成题的参考答案要点兜底（无预置要点时给出通用复盘指引）。"""
-    return [
-        f"围绕【{job_title}】岗位的核心要求展开，明确回答的结论与适用前提",
-        "给出原理/机制层面的解释，而不是只罗列使用方式或名词",
-        "结合候选人自己项目中的真实场景与量化数据佐证",
-        "主动说明方案的边界、代价与被放弃的备选方案及原因",
-        f"题目回顾：{question_text[:60]}{'…' if len(question_text) > 60 else ''}"
-    ]
+def next_fallback_question(used_texts: List[str], total: int, seq: int) -> dict:
+    """题库为空时的兜底组卷：优先取未使用过的题目，用尽后按序号生成变体。"""
+    pool = [q for q in FALLBACK_QUESTIONS if q["text"] not in (used_texts or [])]
+    if pool:
+        picked = random.choice(pool)
+    else:
+        base = FALLBACK_QUESTIONS[(seq - 1) % len(FALLBACK_QUESTIONS)]
+        picked = dict(base)
+    return dict(picked)
 
 
 def question_to_out(q: InterviewQuestion, reveal_reference: bool = False) -> InterviewQuestionOut:
@@ -111,62 +116,6 @@ def build_question_payload(q: InterviewQuestion, reveal_reference: bool = False)
     }
 
 
-def next_fallback_question(used_texts: List[str], total: int, seq: int) -> dict:
-    """题库为空时的兜底组卷：优先取未使用过的题目，用尽后按序号生成变体。"""
-    pool = [q for q in FALLBACK_QUESTIONS if q["text"] not in (used_texts or [])]
-    if pool:
-        picked = random.choice(pool)
-    else:
-        base = FALLBACK_QUESTIONS[(seq - 1) % len(FALLBACK_QUESTIONS)]
-        picked = dict(base)
-    return dict(picked)
-
-
-def build_jd_text(job: Job = None, override: str = None) -> str:
-    """优先使用用户输入/自动带出的 JD 文本，否则回退到岗位自身的 JD 字段。"""
-    if override and override.strip():
-        return override.strip()
-    if not job:
-        return ""
-    parts = [
-        f"岗位名称：{job.title}",
-        f"学历要求：{job.education}｜经验要求：{job.experience}｜工作城市：{job.city}",
-    ]
-    if job.skills:
-        parts.append("技能要求：" + "、".join(s.skill_name for s in job.skills))
-    if job.description:
-        parts.append(f"岗位描述：{job.description}")
-    if job.duties:
-        parts.append(f"岗位职责：{job.duties}")
-    if job.requirements:
-        parts.append(f"任职要求：{job.requirements}")
-    if job.bonus:
-        parts.append(f"加分项：{job.bonus}")
-    return "\n".join(parts)
-
-
-def build_resume_context(resume: Resume = None) -> str:
-    """将结构化简历序列化为供 AI 使用的文本上下文。"""
-    if not resume:
-        return ""
-    lines = [f"姓名：{resume.name}｜目标岗位：{resume.target_job_title}"]
-    for e in resume.educations:
-        lines.append(f"教育：{e.school} {e.major} {e.degree}（{e.start_date}~{e.end_date}）")
-    for w in resume.work_experiences:
-        lines.append(f"工作：{w.company} - {w.title}（{w.start_date}~{w.end_date}）：{w.description}")
-    for p in resume.projects:
-        lines.append(f"项目：{p.name}（{p.role}，{p.technologies}）：{p.description}")
-    if resume.skills:
-        lines.append("技能：" + "、".join(f"{s.skill_name}({s.level})" for s in resume.skills))
-    return "\n".join(lines)
-
-
-def load_interview_context(interview: Interview, db: Session):
-    """加载一次面试的 JD 与简历上下文（用于出题与评分）。"""
-    job = db.query(Job).filter(Job.id == interview.job_id).first() if interview.job_id else None
-    resume = db.query(Resume).filter(Resume.id == interview.resume_id).first() if interview.resume_id else None
-    return build_jd_text(job, interview.jd_text), build_resume_context(resume)
-
 def build_interview_out(interview: Interview) -> InterviewOut:
     # 仅面试结束后下发参考答案，作答过程中保持"闭卷"
     reveal = interview.status in ("COMPLETED", "CANCELLED", "EXPIRED")
@@ -209,6 +158,8 @@ def build_interview_out(interview: Interview) -> InterviewOut:
         started_at=interview.started_at,
         ended_at=interview.ended_at,
         created_at=interview.created_at,
+        remaining_seconds=get_remaining_seconds(interview),
+        answered_count=sum(1 for q in interview.questions if q.answer and q.answer.evaluation),
         questions=q_outs,
         current_question=curr_q_out
     )
@@ -467,7 +418,8 @@ def list_interviews(current_user: User = Depends(require_auth), db: Session = De
     interviews = db.query(Interview).filter(Interview.user_id == current_user.id).order_by(Interview.id.desc()).all()
     results = []
     for i in interviews:
-        score = i.report.total_score if i.report else (82.0 if i.status == "COMPLETED" else None)
+        # 无报告不再兜底写死 82 分：未出报告就是 None，前端显示"未结算"
+        score = i.report.total_score if i.report else None
         results.append({
             "id": i.id,
             "job_title": i.job.title if i.job else "Java后端开发工程师",
@@ -507,10 +459,16 @@ def start_interview(id: int, current_user: User = Depends(require_auth), db: Ses
     if not interview:
         raise HTTPException(status_code=404, detail="面试不存在")
 
+    state_machine.ensure(interview.status, state_machine.CAN_START, "开始面试")
     interview.status = "IN_PROGRESS"
-    interview.started_at = datetime.utcnow()
+    if not interview.started_at:
+        interview.started_at = datetime.utcnow()
     db.commit()
-    return ResponseModel(data={"status": "IN_PROGRESS", "message": "面试开始"})
+    return ResponseModel(data={
+        "status": interview.status,
+        "remaining_seconds": get_remaining_seconds(interview),
+        "message": "面试开始"
+    })
 
 @router.post("/interviews/{id}/pause", response_model=ResponseModel[dict])
 def pause_interview(id: int, current_user: User = Depends(require_auth), db: Session = Depends(get_db)):
@@ -518,6 +476,7 @@ def pause_interview(id: int, current_user: User = Depends(require_auth), db: Ses
     if not interview:
         raise HTTPException(status_code=404, detail="面试不存在")
 
+    state_machine.ensure(interview.status, state_machine.CAN_PAUSE, "暂停面试")
     interview.status = "PAUSED"
     db.commit()
     return ResponseModel(data={"status": "PAUSED", "message": "面试已暂停"})
@@ -528,9 +487,29 @@ def resume_interview(id: int, current_user: User = Depends(require_auth), db: Se
     if not interview:
         raise HTTPException(status_code=404, detail="面试不存在")
 
+    state_machine.ensure(interview.status, state_machine.CAN_RESUME, "继续面试")
     interview.status = "IN_PROGRESS"
     db.commit()
-    return ResponseModel(data={"status": "IN_PROGRESS", "message": "面试已恢复继续"})
+    return ResponseModel(data={
+        "status": "IN_PROGRESS",
+        "remaining_seconds": get_remaining_seconds(interview),
+        "message": "面试已恢复继续"
+    })
+
+@router.post("/interviews/{id}/abort", response_model=ResponseModel[dict])
+def abort_interview(id: int, current_user: User = Depends(require_auth), db: Session = Depends(get_db)):
+    """中止面试：不生成报告，终态 CANCELLED，已答部分保留可查。"""
+    interview = db.query(Interview).filter(Interview.id == id, Interview.user_id == current_user.id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="面试不存在")
+
+    state_machine.ensure(interview.status, state_machine.CAN_ABORT, "中止面试")
+    interview.status = "CANCELLED"
+    interview.ended_at = datetime.utcnow()
+    db.commit()
+    log_operation(db, current_user.id, current_user.email, "PERSONAL", "ABORT_INTERVIEW",
+                  "INTERVIEW", id, "中止模拟面试（未生成报告）")
+    return ResponseModel(data={"status": "CANCELLED", "message": "面试已中止"})
 
 @router.post("/interviews/{id}/answer", response_model=ResponseModel[AnswerEvaluationOut])
 async def answer_interview_question(id: int, req: InterviewAnswerRequest, current_user: User = Depends(require_auth), db: Session = Depends(get_db)):
@@ -538,126 +517,19 @@ async def answer_interview_question(id: int, req: InterviewAnswerRequest, curren
     if not interview:
         raise HTTPException(status_code=404, detail="面试不存在")
 
-    # Find current question
-    curr_q = db.query(InterviewQuestion).filter(
-        InterviewQuestion.interview_id == id,
-        InterviewQuestion.seq == interview.current_question_seq
-    ).first()
-    if not curr_q:
-        raise HTTPException(status_code=400, detail="未找到当前题目")
-
-    # Save answer
-    answer = db.query(InterviewAnswer).filter(InterviewAnswer.question_id == curr_q.id).first()
-    if not answer:
-        answer = InterviewAnswer(
-            question_id=curr_q.id,
-            interview_id=id,
-            user_id=current_user.id,
-            text=req.text,
-            duration_sec=req.duration_sec,
-            speaking_rate=req.speaking_rate,
-            filler_count=req.filler_count
-        )
-        db.add(answer)
-        db.commit()
-        db.refresh(answer)
-    else:
-        answer.text = req.text
-        db.commit()
-
-    # AI Evaluation using Rubric (JD + resume + 题库参考答案要点 aware)
-    jd_text, resume_context = load_interview_context(interview, db)
-    ref_points = None
-    if curr_q.reference_points_json:
-        try:
-            parsed = json.loads(curr_q.reference_points_json)
-            ref_points = parsed if isinstance(parsed, list) else None
-        except Exception:
-            ref_points = None
-    eval_res = await ai_provider.evaluate_answer(
-        curr_q.text, req.text, curr_q.seq,
-        jd_text=jd_text or None,
-        resume_context=resume_context or None,
-        reference_points=ref_points
+    # 答题、评分、追问、推进统一走核心服务（与 WebSocket 通道共用）
+    result = await submit_answer_core(
+        db, interview, current_user,
+        text=req.text, duration_sec=req.duration_sec,
+        speaking_rate=req.speaking_rate, filler_count=req.filler_count
     )
-
-    # Save evaluation
-    eval_obj = db.query(AnswerEvaluation).filter(AnswerEvaluation.answer_id == answer.id).first()
-    if not eval_obj:
-        eval_obj = AnswerEvaluation(
-            answer_id=answer.id,
-            interview_id=id,
-            total_score=eval_res["score"],
-            dimensions_json=json.dumps(eval_res["dimensions"], ensure_ascii=False),
-            evidence_json=json.dumps(eval_res["evidence"], ensure_ascii=False),
-            weaknesses_json=json.dumps(eval_res["weaknesses"], ensure_ascii=False),
-            missing_knowledge_json=json.dumps(eval_res["missing_knowledge"], ensure_ascii=False),
-            suggestions_json=json.dumps(eval_res["suggestions"], ensure_ascii=False),
-            next_action=eval_res.get("next_action", "CHANGE_TOPIC")
-        )
-        db.add(eval_obj)
-    else:
-        eval_obj.total_score = eval_res["score"]
-        eval_obj.dimensions_json = json.dumps(eval_res["dimensions"], ensure_ascii=False)
-        eval_obj.next_action = eval_res.get("next_action", "CHANGE_TOPIC")
-
-    db.commit()
-
-    next_q_out = None
-    if curr_q.seq < interview.total_questions:
-        next_seq = curr_q.seq + 1
-        interview.current_question_seq = next_seq
-        db.commit()
-
-        next_q = db.query(InterviewQuestion).filter(
-            InterviewQuestion.interview_id == id,
-            InterviewQuestion.seq == next_seq
-        ).first()
-
-        # 卷面已在创建时预生成；此处仅在极端缺题时用 AI 兜底补一题
-        if not next_q:
-            job_title = interview.job.title if interview.job else "Java后端开发工程师"
-            q_data = await ai_provider.generate_question(
-                job_title=job_title,
-                seq=next_seq,
-                difficulty=interview.difficulty,
-                last_question=curr_q.text,
-                last_answer=req.text,
-                last_score=eval_res["score"],
-                jd_text=jd_text or None,
-                resume_context=resume_context or None
-            )
-            text = q_data.get("question") or ""
-            if not text:
-                fb = next_fallback_question([q.text for q in interview.questions],
-                                            interview.total_questions, next_seq)
-                text = fb["text"]
-                q_data = {**fb, "question": text}
-            next_q = InterviewQuestion(
-                interview_id=id,
-                parent_question_id=curr_q.id,
-                seq=next_seq,
-                stage=q_data.get("stage") or "专业基础",
-                question_type=q_data.get("question_type") or PROFESSIONAL,
-                skill_name=q_data.get("skill_name") or job_title,
-                text=text,
-                difficulty=q_data.get("difficulty") or interview.difficulty,
-                hints=q_data.get("hints"),
-                time_limit_sec=q_data.get("time_limit_sec") or 180,
-                reference_points_json=json.dumps(
-                    build_ai_reference_points(job_title, text), ensure_ascii=False
-                ),
-                source="AI_GENERATED"
-            )
-            db.add(next_q)
-            db.commit()
-            db.refresh(next_q)
-
-        # 作答中不下发参考答案，保持闭卷
-        next_q_out = question_to_out(next_q, reveal_reference=False)
+    eval_res = result["eval_res"]
+    next_q = result["next_question"]
+    # 作答中不下发参考答案，保持闭卷
+    next_q_out = question_to_out(next_q, reveal_reference=False) if next_q else None
 
     return ResponseModel(data=AnswerEvaluationOut(
-        answer_id=answer.id,
+        answer_id=result["answer"].id,
         total_score=eval_res["score"],
         dimensions=eval_res["dimensions"],
         evidence=eval_res["evidence"],
@@ -665,7 +537,12 @@ async def answer_interview_question(id: int, req: InterviewAnswerRequest, curren
         missing_knowledge=eval_res["missing_knowledge"],
         suggestions=eval_res["suggestions"],
         next_action=eval_res.get("next_action", "CHANGE_TOPIC"),
-        next_question=next_q_out
+        next_question=next_q_out,
+        is_followup=result["is_followup"],
+        is_finished=result["finished"],
+        report_id=result.get("report_id"),
+        remaining_seconds=result["remaining_seconds"],
+        total_questions=interview.total_questions
     ))
 
 @router.post("/interviews/{id}/finish", response_model=ResponseModel[dict])
@@ -674,83 +551,10 @@ async def finish_interview(id: int, current_user: User = Depends(require_auth), 
     if not interview:
         raise HTTPException(status_code=404, detail="面试不存在")
 
-    interview.status = "COMPLETED"
-    interview.ended_at = datetime.utcnow()
-
-    # Generate report
-    all_evals = db.query(AnswerEvaluation).filter(AnswerEvaluation.interview_id == id).all()
-    scores = [e.total_score for e in all_evals] if all_evals else [82.0]
-
-    job_title = interview.job.title if interview.job else "Java后端开发工程师"
-    jd_text, resume_context = load_interview_context(interview, db)
-    qa_pairs = []
-    for q in sorted(interview.questions, key=lambda x: x.seq):
-        if q.answer and q.answer.evaluation:
-            qa_pairs.append({
-                "seq": q.seq,
-                "question": q.text,
-                "answer": q.answer.text,
-                "score": q.answer.evaluation.total_score
-            })
-    report_data = await ai_provider.generate_report(
-        id, interview.total_questions, scores,
-        qa_pairs=qa_pairs or None,
-        job_title=job_title
-    )
-
-    rep = db.query(InterviewReport).filter(InterviewReport.interview_id == id).first()
-    if not rep:
-        rep = InterviewReport(
-            interview_id=id,
-            user_id=current_user.id,
-            total_score=report_data["total_score"],
-            performance_level=report_data["performance_level"],
-            dimension_scores_json=json.dumps(report_data["dimension_scores"], ensure_ascii=False),
-            strengths_json=json.dumps(report_data["strengths"], ensure_ascii=False),
-            weaknesses_json=json.dumps(report_data["weaknesses"], ensure_ascii=False),
-            suggestions_json=json.dumps(report_data["suggestions"], ensure_ascii=False),
-            summary=report_data["summary"],
-            status="COMPLETED"
-        )
-        db.add(rep)
-    else:
-        rep.total_score = report_data["total_score"]
-        rep.dimension_scores_json = json.dumps(report_data["dimension_scores"], ensure_ascii=False)
-        rep.status = "COMPLETED"
-
-    # Update competency history
-    comp_hist = CompetencyHistory(
-        user_id=current_user.id,
-        competency_name="Redis",
-        score=report_data["total_score"],
-        source_type="INTERVIEW",
-        source_id=id
-    )
-    db.add(comp_hist)
-
-    # Update or insert user_competency
-    u_comp = db.query(UserCompetency).filter(
-        UserCompetency.user_id == current_user.id,
-        UserCompetency.competency_name == "Redis"
-    ).first()
-    if u_comp:
-        u_comp.score = report_data["total_score"]
-    else:
-        u_comp = UserCompetency(user_id=current_user.id, competency_name="Redis", score=report_data["total_score"])
-        db.add(u_comp)
-
-    # Generate staged learning tasks based on target job (from user's career preference)
-    from app.api.v1.personal import generate_and_store_learning_plan, resolve_target_job
-    target_job_title = resolve_target_job(current_user)
-    await generate_and_store_learning_plan(
-        db, current_user, target_job_title,
-        jd_text=jd_text or None,
-        gaps=report_data.get("weaknesses"),
-        replace=True
-    )
-
-    db.commit()
-    log_operation(db, current_user.id, current_user.email, "PERSONAL", "FINISH_INTERVIEW", "INTERVIEW", id, f"完成模拟面试，得分：{report_data['total_score']}")
+    # 结算与报告生成统一走核心服务：幂等、未答完拦截、无作答不再产出假报告
+    rep = await finalize_interview(db, interview, current_user, force=True)
+    log_operation(db, current_user.id, current_user.email, "PERSONAL", "FINISH_INTERVIEW",
+                  "INTERVIEW", id, f"完成模拟面试，得分：{rep.total_score}")
 
     return ResponseModel(data={
         "report_id": rep.id,
@@ -777,26 +581,11 @@ def get_interview_report(id: int, current_user: User = Depends(require_auth), db
 
     report = interview.report
     if not report:
-        # Fallback default report if not yet generated
-        rep_data = {
-            "id": 1,
-            "interview_id": id,
-            "user_id": interview.user_id,
-            "job_title": interview.job.title if interview.job else "Java后端开发工程师",
-            "interview_type": "企业官方甄选面试" if interview.type == "ENTERPRISE_RECRUITMENT" else "AI 全真模拟与能力复盘",
-            "duration_minutes": interview.duration_minutes or 28,
-            "total_score": 82.0,
-            "performance_level": "表现良好",
-            "dimension_scores": {"专业基础": 85.0, "项目经验": 88.0, "系统设计": 72.0, "沟通表达": 80.0, "综合素质": 76.0},
-            "strengths": ["Redis 缓存架构理解清晰", "语言组织有条理，技术概念准确"],
-            "weaknesses": ["缓存双写一致性在极端并发下的补偿策略思考稍欠充分"],
-            "suggestions": ["深入研读 Redisson 源码与分布式锁续期机制", "多练习架构设计大题并用量化数字支撑回答"],
-            "summary": "整体表现良好，技术底子扎实，建议重点攻坚高并发容灾与分布式架构设计。",
-            "status": "COMPLETED",
-            "created_at": interview.created_at,
-            "questions_analysis": []
-        }
-        return ResponseModel(data=InterviewReportOut(**rep_data))
+        # 不再返回写死的 82 分假报告：未结算就是未结算
+        raise HTTPException(
+            status_code=404,
+            detail="本次面试尚未生成报告（未结算或已中止）"
+        )
 
     # Questions breakdown
     q_analysis = []

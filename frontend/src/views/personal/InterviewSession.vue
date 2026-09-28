@@ -233,7 +233,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { interviewApi } from '@/api'
 import StateContainer from '@/components/StateContainer.vue'
@@ -346,11 +346,15 @@ const loadSession = async () => {
     const res: any = await interviewApi.getInterview(interviewId)
     const data = res?.data || res
     session.value = data
-    // 整场剩余时间按已用时长折算（服务端 started_at 为准，回退按题量估算）
-    remainingSeconds.value = Math.max(
-      60,
-      (data?.duration_minutes || (data?.total_questions || 5) * 5) * 60
-    )
+    // 整场剩余时间以服务端 started_at 口径为准（刷新页面不会重置）
+    if (typeof data?.remaining_seconds === 'number') {
+      remainingSeconds.value = data.remaining_seconds
+    } else {
+      remainingSeconds.value = Math.max(
+        60,
+        (data?.duration_minutes || (data?.total_questions || 5) * 5) * 60
+      )
+    }
     if (data?.current_question) {
       currentQuestion.value = data.current_question
     } else if (data?.questions?.length) {
@@ -396,14 +400,25 @@ const submitCurrentAnswer = async () => {
     const data = res?.data || res
     ElMessage.success('回答提交成功')
 
-    if (data?.is_finished || session.value.current_question_seq >= session.value.total_questions) {
+    // 服务端判定完成（含追问加题后的真实总题数）
+    if (data?.is_finished) {
       router.push(`/interviews/${interviewId}/report`)
     } else {
-      session.value.current_question_seq += 1
-      // 下一题由后端卷面下发（题库预生成或 AI 补足），不再前端兜底假题
+      // 同步追问加题与剩余时间（服务端口径）
+      if (typeof data?.total_questions === 'number') {
+        session.value.total_questions = data.total_questions
+      }
+      if (typeof data?.remaining_seconds === 'number') {
+        remainingSeconds.value = data.remaining_seconds
+      }
+      session.value.current_question_seq = data.next_question?.seq ?? (session.value.current_question_seq + 1)
+      // 下一题由后端卷面下发（题库预生成 / 自适应追问 / AI 补足）
       currentQuestion.value = data.next_question || null
       answerText.value = ''
       resetQuestionTimer()
+      if (data?.is_followup) {
+        ElMessage.info('AI 面试官根据你的回答，追加了一道针对性问题')
+      }
       if (!currentQuestion.value) {
         ElMessage.warning('未获取到下一题，正在重新加载考卷')
         await loadSession()
@@ -427,6 +442,28 @@ const handleConfirmFinish = () => {
     router.push(`/interviews/${interviewId}/report`)
   }).catch(() => {})
 }
+
+// 整场时间归零：自动交卷生成报告（当前题如有未提交内容一并交上）
+let autoFinished = false
+watch(remainingSeconds, async (val) => {
+  if (val > 0 || autoFinished || !session.value) return
+  autoFinished = true
+  ElMessage.warning('整场面试时间已用完，正在自动交卷生成报告...')
+  try {
+    if (answerText.value.trim() && currentQuestion.value?.id) {
+      await interviewApi.answerQuestion(Number(route.params.id), {
+        question_id: currentQuestion.value.id,
+        text: answerText.value,
+        duration_sec: questionElapsed.value
+      }).catch(() => {})
+    }
+    await interviewApi.finishInterview(Number(route.params.id))
+    router.push(`/interviews/${Number(route.params.id)}/report`)
+  } catch (e) {
+    ElMessage.error('自动交卷失败，请手动点击"结束面试"')
+    autoFinished = false
+  }
+})
 
 onMounted(() => {
   loadSession()
