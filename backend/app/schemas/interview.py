@@ -14,6 +14,8 @@ class InterviewCreate(BaseModel):
     jd_text: Optional[str] = None   # 用户输入的/自动带出的岗位 JD 文本
     use_question_bank: bool = True  # 是否优先从结构化题库组卷（关闭则全部 AI 实时生成）
     selected_bank_ids: Optional[List[int]] = None  # 按已预览确认的考卷出题（题库题目 ID，按顺序）
+    purpose: str = "NORMAL"          # NORMAL 常规 / RETRAIN 薄弱题重练
+    derived_from_id: Optional[int] = None  # 重练来源面试 ID
 
 class InterviewQuestionOut(BaseModel):
     id: int
@@ -78,9 +80,9 @@ class InterviewOut(BaseModel):
 
 class InterviewAnswerRequest(BaseModel):
     text: str
-    duration_sec: int = 40
-    speaking_rate: int = 160
-    filler_count: int = 2
+    # 用时由服务端按呈现时间锚点计算，客户端值仅作无锚点时的回退
+    duration_sec: Optional[int] = None
+    # 语音链路未接入：不再接收客户端假指标（speaking_rate/filler_count 已移除）
 
 class AnswerEvaluationOut(BaseModel):
     answer_id: int
@@ -97,6 +99,11 @@ class AnswerEvaluationOut(BaseModel):
     report_id: Optional[int] = None    # 自动结算生成的报告 ID
     remaining_seconds: Optional[int] = None  # 服务端口径的整场剩余秒数
     total_questions: Optional[int] = None    # 追问加题后的最新总题数
+    # 单题超时（服务端判定）：超时轻扣分但不归零，空作答直接 0 分
+    raw_score: Optional[float] = None
+    overtime: bool = False
+    overtime_sec: int = 0
+    is_empty: bool = False
 
 class InterviewReportOut(BaseModel):
     id: int
@@ -115,6 +122,8 @@ class InterviewReportOut(BaseModel):
     status: str
     created_at: datetime
     questions_analysis: List[Dict[str, Any]] = []
+    # 时间维度分析：逐题用时/限时/超时情况与汇总（服务端计时口径）
+    time_analysis: Optional[Dict[str, Any]] = None
 
 class InterviewInvitationCreate(BaseModel):
     application_id: int

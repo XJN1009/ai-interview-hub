@@ -195,6 +195,55 @@
                   <span class="sec-subtitle">点击展开查看每一道题的候选人实际原对答、AI 采分点证据与针对性精进建议</span>
                 </div>
 
+                <!-- 时间维度分析（服务端计时口径） -->
+                <div v-if="report.time_analysis" class="time-card">
+                  <div class="tc-head">
+                    <span class="tc-title">答题节奏与时间利用</span>
+                    <span class="tc-note">用时由服务端按题目呈现时间计算，超时轻扣分（每 30 秒扣 3 分，最多 15 分），不归零</span>
+                  </div>
+                  <div class="tc-metrics">
+                    <div class="tc-metric">
+                      <span class="v">{{ report.time_analysis.total_time_sec }}<i>秒</i></span>
+                      <span class="k">累计用时</span>
+                    </div>
+                    <div class="tc-metric">
+                      <span class="v">{{ report.time_analysis.avg_time_sec }}<i>秒</i></span>
+                      <span class="k">平均每题</span>
+                    </div>
+                    <div class="tc-metric">
+                      <span class="v" :class="{ warn: report.time_analysis.overtime_count > 0 }">
+                        {{ report.time_analysis.overtime_count }}/{{ report.time_analysis.total_answered }}
+                      </span>
+                      <span class="k">超时题数（超时率 {{ Math.round(report.time_analysis.overtime_rate * 100) }}%）</span>
+                    </div>
+                    <div class="tc-metric">
+                      <span class="v">{{ Math.round(report.time_analysis.avg_usage_ratio * 100) }}<i>%</i></span>
+                      <span class="k">平均限时占用率</span>
+                    </div>
+                  </div>
+                  <div class="tc-bars">
+                    <div v-for="t in report.time_analysis.items" :key="t.seq" class="tc-bar-row">
+                      <span class="tb-seq">第 {{ t.seq }} 题</span>
+                      <div class="tb-track">
+                        <div
+                          class="tb-fill"
+                          :class="{ over: t.overtime }"
+                          :style="{ width: Math.min(100, t.usage_ratio * 100) + '%' }"
+                        ></div>
+                      </div>
+                      <span class="tb-val" :class="{ over: t.overtime }">
+                        {{ t.duration_sec }}s / {{ t.time_limit_sec }}s
+                        <template v-if="t.overtime">（超 {{ t.overtime_sec }}s）</template>
+                      </span>
+                    </div>
+                  </div>
+                  <p v-if="report.time_analysis.overtime_skills.length" class="tc-conclusion">
+                    超时集中在
+                    <strong>{{ report.time_analysis.overtime_skills.join('、') }}</strong>
+                    相关题目——建议针对这些方向提前准备答题框架，控制在限时内完成要点表达。
+                  </p>
+                </div>
+
                 <div class="questions-accordion">
                   <el-collapse v-model="activeQuestions">
                     <el-collapse-item
@@ -210,6 +259,8 @@
                             {{ qtypeLabel(q.question_type) }}
                           </span>
                           <span v-if="q.skill_name" class="q-skill-mini">{{ q.skill_name }}</span>
+                          <span v-if="q.overtime" class="q-ot-tag">超时 {{ q.overtime_sec }}s</span>
+                          <span v-else-if="q.duration_sec" class="q-time-mini">{{ q.duration_sec }}s/{{ q.time_limit_sec }}s</span>
                           <span class="q-text-snippet">{{ q.question }}</span>
                           <div class="score-badge-box">
                             <span class="score-num">{{ q.score }}</span>
@@ -866,6 +917,74 @@ onMounted(() => {
   border-radius: 4px;
   white-space: nowrap;
 }
+
+.q-ot-tag {
+  font-size: 11px;
+  font-weight: 700;
+  color: #B91C1C;
+  background: #FEF2F2;
+  border: 1px solid #FECACA;
+  padding: 3px 8px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.q-time-mini {
+  font-size: 11px;
+  color: #64748B;
+  padding: 3px 4px;
+  white-space: nowrap;
+}
+
+/* 时间维度分析卡 */
+.time-card {
+  background: #FFFFFF;
+  border: 1px solid var(--zh-border);
+  border-radius: 12px;
+  padding: 16px 18px;
+  margin-bottom: 18px;
+}
+
+.tc-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 12px; }
+.tc-title { font-size: 15px; font-weight: 800; color: var(--zh-text-title); }
+.tc-note { font-size: 12px; color: var(--zh-text-muted); }
+
+.tc-metrics { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+.tc-metric {
+  flex: 1;
+  min-width: 120px;
+  background: #F8FAFC;
+  border: 1px solid var(--zh-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+}
+.tc-metric .v { font-size: 20px; font-weight: 800; color: var(--zh-primary); }
+.tc-metric .v i { font-size: 12px; font-style: normal; font-weight: 600; margin-left: 2px; }
+.tc-metric .v.warn { color: #DC2626; }
+.tc-metric .k { font-size: 11.5px; color: var(--zh-text-muted); line-height: 1.5; }
+
+.tc-bars { display: flex; flex-direction: column; gap: 8px; }
+.tc-bar-row { display: flex; align-items: center; gap: 10px; }
+.tb-seq { font-size: 12px; color: #475569; width: 52px; flex-shrink: 0; }
+.tb-track { flex: 1; height: 8px; background: #EEF2F7; border-radius: 5px; overflow: hidden; }
+.tb-fill { height: 100%; background: #2563EB; border-radius: 5px; transition: width 0.3s; }
+.tb-fill.over { background: #EF4444; }
+.tb-val { font-size: 11.5px; color: var(--zh-text-muted); width: 150px; flex-shrink: 0; text-align: right; }
+.tb-val.over { color: #DC2626; font-weight: 700; }
+
+.tc-conclusion {
+  margin-top: 12px;
+  font-size: 12.5px;
+  color: #7C2D12;
+  background: #FFF7ED;
+  border-left: 3px solid #F59E0B;
+  border-radius: 0 8px 8px 0;
+  padding: 8px 12px;
+  line-height: 1.7;
+}
+.tc-conclusion strong { color: #B45309; }
 
 .q-text-snippet {
   font-size: 14px;

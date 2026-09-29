@@ -27,3 +27,25 @@
   - 整场计时服务端化：以 started_at 计算 remaining_seconds 并在 start/resume/answer/详情接口下发，刷新页面不再重置；面试间时间归零自动交卷生成报告；最后一题答完由服务端自动结算并直接返回 report_id
   - 假数据清理：面试列表无报告时 score 返回 null（前端显示"未生成"）；报告接口未结算时返回 404 而非写死的 82 分假报告；无任何作答交卷被 409 拒绝
   - 验证：test_question_bank.py 重写覆盖新行为共 44 项断言全部通过（含追问升难/降难、409 拦截、abort、自动结算）；真实 LLM 实机全链路验证通过；前端构建（vue-tsc）通过
+- 模拟面试功能缺口补全（B 类第 8、9 项）：
+  - 题库管理界面（M08）：新增 `GET/POST/PUT /admin/question-bank` 与 `PATCH /{id}/toggle`（仅 PLATFORM_ADMIN/SUPER_ADMIN 可访问）；支持分页 + 关键词/岗位大类/题型/难度/启用状态筛选与全量分类统计；题干去重与枚举校验；新题 source=MANUAL（种子重建不丢失）；只停用、不物理删除（bank_id 被历史卷面与错题清单引用）
+  - 管理端页面：新增 `views/admin/QuestionBank.vue`（展开行查看题干与参考答案要点、编辑弹窗要点动态增删、"编辑仅影响之后组卷"提示），路由 `/admin/question-bank` 与侧边栏入口
+  - 面试历史对比：`GET /interviews/history-comparison` 同岗位逐维趋势与 delta；`Interview` 新增 `purpose`(NORMAL/RETRAIN) 与 `derived_from_id` 字段（ensure_schema 迁移 + 回填），默认排除重练记录，少于 2 次返回空态不写死
+  - 薄弱题重练：`GET /interviews/weak-questions` 按 bank_id 聚合历次得分、以"最近一次得分 < 阈值"判定薄弱并过滤已停用题；面试记录页新增"成长对比 + 薄弱题"双卡，一键重练直接复用 selected_bank_ids 按指定考卷开考（purpose=RETRAIN，不计入成长曲线）
+  - 成长中心去假数据：`/personal/growth` 移除写死的 68/74/82 趋势与 85% 完成率兜底，改为真实聚合 + 空态（has_data/None），并默认排除重练记录
+  - 验证：新增 test_admin_bank_and_insights.py 33 项断言全部通过（权限、CRUD、停用不组卷、薄弱清单、重练卷面、对比口径、growth 空态）；基线 test_question_bank.py 44 项无回归；前端构建通过；实机抽查迁移生效与端点数据正常
+- 单题服务端超时校验（B 类第 6 项）：
+  - 计时锚点：`Interview` 新增 `current_question_shown_at`（当前题呈现时间）与 `paused_at`（暂停时刻），`InterviewAnswer` 新增 `overtime` / `overtime_sec`；均由 `ensure_schema` 增量迁移并回填旧数据
+  - 服务端判定：单题真实用时按 `utcnow - 呈现时间` 计算并**覆盖客户端上报的 duration_sec**（防脏数据与刷分），无锚点的历史会话退回客户端值；推进下一题/插入追问题时重置锚点，创建面试与 WS 连接时写入锚点
+  - 超时轻扣分（不归零）：每超时 30 秒扣 3 分、上限 15 分，扣分过程写入评分证据（`raw_score → total_score`）并在接口响应返回 `raw_score/overtime/overtime_sec`，REST 与 WebSocket 两条通道一致
+  - 空作答：直接判 0 分并给出"避免留白"的针对性建议，不消耗 LLM 调用，也不叠加超时扣分
+  - 暂停豁免：resume 时把暂停时长从单题与整场锚点中整体剔除，暂停 10 分钟不会被判超时
+  - 报告时间维度：`/interviews/{id}/report` 新增 `time_analysis`（累计/平均/极值用时、限时占用率、超时题数与超时率、超时集中的技能），逐题分析补 `duration_sec/time_limit_sec/overtime/overtime_sec/is_empty`
+  - 前端：面试间按服务端结果提示"超时 N 秒已轻扣分（raw → final）"或"空作答按 0 分记录"；报告页逐题复盘新增"答题节奏与时间利用"分析卡（指标 + 逐题用时进度条 + 超时技能结论），逐题标题显示超时标记
+  - 验证：新增 test_overtime.py 26 项断言全部通过（锚点写入、超时标记与秒数、扣分上限与不归零、服务端纠正客户端用时、空作答 0 分、暂停 600 秒豁免、报告时间统计）；基线 test_question_bank.py 44 项与 test_admin_bank_and_insights.py 33 项均无回归；前端构建通过；实机验证超时 80 秒扣 9 分、总用时统计准确
+- 语音链路治理（B 类第 7 项，决策：不接云端 ASR/TTS，走浏览器原生能力 + 假指标清零）：
+  - 假指标清零：`InterviewAnswerRequest` 移除 `speaking_rate/filler_count` 入参；核心服务显式写 0（语义"未测量"）；模型默认值 160/2 改为 0；`seed_demo` 不再灌假值；`ensure_schema` 启动时一次性把历史 answers 的假指标（160/2）清洗归零（已验证 87 条全部归零）
+  - 真实语音转写：面试间"语音口述"按钮接入浏览器原生 Web Speech API（zh-CN、continuous、interimResults），识别结果实时写入回答框；不支持的浏览器/权限拒绝/异常均有降级提示，onend 自动重启防静默中断；暂停与页面卸载时正确 abort 并释放资源
+  - 真实题目朗读："重听题目"改为 `speechSynthesis` 朗读当前题干（可停止），替代原"假重播"提示
+  - 设备检测真实化：创建页四项检测改为真实探测——`enumerateDevices` 枚举摄像头/麦克风数量、TTS 能力检测、后端连通性实测往返毫秒（不再写死"延迟 25ms 优秀"），不支持项如实标灰/标黄
+  - 验证：三套后端测试（44+26+33）无回归；前端构建通过；浏览器实测：检测卡显示"检测到 2 个（可文本作答）/检测到 3 个，支持语音转写/支持题目朗读/服务正常，往返 34ms"，"停止朗读""停止口述"状态切换正常，键盘答题主流程不受影响，无 Vue 报错

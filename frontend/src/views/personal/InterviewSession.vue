@@ -144,12 +144,15 @@
           <div class="controls-pill-group">
             <button
               type="button"
-              :class="['hardware-ctrl-btn', { active: micEnabled }]"
-              :title="micEnabled ? '麦克风已开启' : '麦克风已静音'"
-              @click="micEnabled = !micEnabled"
+              :class="['hardware-ctrl-btn', { active: transcribing, disabled: !speechSupported }]"
+              :title="speechSupported
+                ? (transcribing ? '点击停止语音转写' : '点击开始语音转写（浏览器原生识别）')
+                : '当前浏览器不支持语音转写，请使用 Chrome/Edge'"
+              @click="toggleTranscription"
             >
               <el-icon :size="18"><Microphone /></el-icon>
-              <span>{{ micEnabled ? '麦克风开' : '麦克风静音' }}</span>
+              <span v-if="transcribing" class="rec-dot"></span>
+              <span>{{ speechSupported ? (transcribing ? '停止口述' : '语音口述') : '不支持语音' }}</span>
             </button>
 
             <button
@@ -173,11 +176,12 @@
 
             <button
               type="button"
-              class="hardware-ctrl-btn"
+              :class="['hardware-ctrl-btn', { active: speaking, disabled: !ttsSupported }]"
+              :title="ttsSupported ? (speaking ? '点击停止朗读' : '朗读本题题目') : '当前浏览器不支持语音朗读'"
               @click="handleReplayQuestion"
             >
               <el-icon :size="18"><RefreshRight /></el-icon>
-              <span>重听题目</span>
+              <span>{{ speaking ? '停止朗读' : '重听题目' }}</span>
             </button>
           </div>
 
@@ -272,10 +276,119 @@ const resetQuestionTimer = () => {
   questionElapsed.value = 0
 }
 
-const micEnabled = ref(true)
 const cameraEnabled = ref(true)
 const videoRef = ref<HTMLVideoElement | null>(null)
 let localStream: MediaStream | null = null
+
+/* ---------- 语音转写（浏览器原生 Web Speech API，零依赖零上传） ---------- */
+type SpeechRecognitionLike = {
+  lang: string
+  continuous: boolean
+  interimResults: boolean
+  start: () => void
+  stop: () => void
+  abort: () => void
+  onresult: ((e: any) => void) | null
+  onerror: ((e: any) => void) | null
+  onend: (() => void) | null
+}
+const getRecognitionCtor = (): (new () => SpeechRecognitionLike) | null => {
+  const w = window as any
+  return w.SpeechRecognition || w.webkitSpeechRecognition || null
+}
+const speechSupported = ref(!!getRecognitionCtor())
+const transcribing = ref(false)
+const ttsSupported = ref(typeof window !== 'undefined' && 'speechSynthesis' in window)
+const speaking = ref(false)
+let recognition: SpeechRecognitionLike | null = null
+// 已定稿的转写文本前缀：识别结果整体替换，避免重复追加
+let committedText = ''
+
+const startTranscription = () => {
+  const Ctor = getRecognitionCtor()
+  if (!Ctor) {
+    speechSupported.value = false
+    ElMessage.warning('当前浏览器不支持语音转写，请使用 Chrome/Edge，或直接键盘输入')
+    return
+  }
+  if (transcribing.value) return
+  committedText = answerText.value ? answerText.value.trimEnd() + ' ' : ''
+  recognition = new Ctor()
+  recognition.lang = 'zh-CN'
+  recognition.continuous = true
+  recognition.interimResults = true
+  recognition.onresult = (e: any) => {
+    let finalText = ''
+    let interimText = ''
+    for (let i = 0; i < e.results.length; i++) {
+      const r = e.results[i]
+      if (r.isFinal) finalText += r[0].transcript
+      else interimText += r[0].transcript
+    }
+    answerText.value = (committedText + finalText + interimText).trimStart()
+  }
+  recognition.onerror = (e: any) => {
+    if (e?.error === 'not-allowed' || e?.error === 'service-not-allowed') {
+      ElMessage.error('麦克风权限被拒绝，无法语音作答')
+      transcribing.value = false
+    } else if (e?.error !== 'aborted' && e?.error !== 'no-speech') {
+      ElMessage.warning(`语音转写异常：${e?.error || 'unknown'}`)
+    }
+  }
+  recognition.onend = () => {
+    // 用户仍在录音态时自动重启，避免浏览器静默结束导致中断
+    if (transcribing.value) {
+      try { recognition?.start() } catch { /* 已启动 */ }
+    }
+  }
+  try {
+    recognition.start()
+    transcribing.value = true
+    ElMessage.success('已开始语音转写，请口述你的回答')
+  } catch (e) {
+    ElMessage.error('语音转写启动失败，请检查麦克风权限')
+    transcribing.value = false
+  }
+}
+
+const stopTranscription = () => {
+  if (!transcribing.value) return
+  transcribing.value = false
+  committedText = answerText.value ? answerText.value.trimEnd() + ' ' : ''
+  try { recognition?.stop() } catch { /* ignore */ }
+  recognition = null
+  ElMessage.info('已停止语音转写')
+}
+
+const toggleTranscription = () => {
+  transcribing.value ? stopTranscription() : startTranscription()
+}
+
+/* ---------- 题目朗读（speechSynthesis，替代原"假重播"按钮） ---------- */
+const handleReplayQuestion = () => {
+  const text = currentQuestion.value?.text
+  if (!text) {
+    ElMessage.warning('题目尚未加载完成')
+    return
+  }
+  if (!ttsSupported.value) {
+    ElMessage.warning('当前浏览器不支持语音朗读，请查看屏幕上的题目文本')
+    return
+  }
+  const synth = window.speechSynthesis
+  if (speaking.value) {
+    synth.cancel()
+    speaking.value = false
+    return
+  }
+  const utter = new SpeechSynthesisUtterance(text)
+  utter.lang = 'zh-CN'
+  utter.rate = 1.05
+  utter.onend = () => { speaking.value = false }
+  utter.onerror = () => { speaking.value = false }
+  speaking.value = true
+  synth.speak(utter)
+}
 
 const showAssist = ref(false) // Default folded per spec
 
@@ -325,11 +438,8 @@ const toggleCamera = () => {
 
 const handlePauseResume = () => {
   isPaused.value = !isPaused.value
+  if (isPaused.value && transcribing.value) stopTranscription()
   ElMessage.info(isPaused.value ? '答题计时已暂停' : '已恢复答题')
-}
-
-const handleReplayQuestion = () => {
-  ElMessage.success('已触发重播题目语音播报')
 }
 
 const insertTemplate = () => {
@@ -398,7 +508,13 @@ const submitCurrentAnswer = async () => {
     })
 
     const data = res?.data || res
-    ElMessage.success('回答提交成功')
+    if (data?.is_empty) {
+      ElMessage.warning('本题未提交有效作答，已按 0 分记录')
+    } else if (data?.overtime) {
+      ElMessage.warning(`本题超时 ${data.overtime_sec} 秒，已轻扣分（${data.raw_score} → ${data.total_score}）`)
+    } else {
+      ElMessage.success('回答提交成功')
+    }
 
     // 服务端判定完成（含追问加题后的真实总题数）
     if (data?.is_finished) {
@@ -471,6 +587,10 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (timer) clearInterval(timer)
+  transcribing.value = false
+  try { recognition?.abort() } catch { /* ignore */ }
+  recognition = null
+  if (ttsSupported.value) window.speechSynthesis.cancel()
   if (localStream) {
     localStream.getTracks().forEach(t => t.stop())
   }
@@ -948,6 +1068,26 @@ onUnmounted(() => {
   background: rgba(37, 99, 235, 0.2);
   border-color: #3B82F6;
   color: #60A5FA;
+}
+
+.hardware-ctrl-btn.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.rec-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #EF4444;
+  box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.6);
+  animation: rec-blink 1.2s infinite;
+}
+
+@keyframes rec-blink {
+  0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.55); }
+  70% { box-shadow: 0 0 0 7px rgba(239, 68, 68, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
 }
 
 .assistant-drawer-toggle .drawer-btn {

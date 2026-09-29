@@ -1,5 +1,5 @@
 import client from './client'
-import type { UserInfo, JobItem, ResumeItem, ApplicationItem, InterviewSession, InterviewReportData, PaperPreview } from '@/types'
+import type { UserInfo, JobItem, ResumeItem, ApplicationItem, InterviewSession, InterviewReportData, PaperPreview, HistoryComparison, WeakQuestionsResult, QuestionBankListResult } from '@/types'
 
 export const authApi = {
   login: (data: any) => client.post('/auth/login', data),
@@ -86,6 +86,11 @@ export const interviewApi = {
     client.get<any, { mode: string; ratio: Record<string, number>; allocated: Record<string, number>; bank_available: number; bank_ready: boolean }>('/interviews/paper-ratio', { params }),
   previewPaper: (data: any) => client.post<any, PaperPreview>('/interviews/paper-preview', data),
   getBankStats: () => client.get<any, { total: number; by_type: Record<string, number>; by_category: Record<string, number>; ready: boolean }>('/interviews/bank-stats'),
+  // 面试历史对比（同岗位逐维趋势）与薄弱题清单
+  getHistoryComparison: (params?: { job_id?: number; include_retrain?: boolean }) =>
+    client.get<any, HistoryComparison>('/interviews/history-comparison', { params }),
+  getWeakQuestions: (params?: { threshold?: number; limit?: number }) =>
+    client.get<any, WeakQuestionsResult>('/interviews/weak-questions', { params }),
 }
 
 export const enterpriseApi = {
@@ -146,4 +151,9 @@ export const adminApi = {
   updateAIProvider: (data: any) => client.patch('/admin/ai/providers', data),
   getAILogs: () => client.get('/admin/ai/logs'),
   getAuditLogs: () => client.get('/admin/audit-logs'),
+  // 结构化题库管理（M08）
+  listQuestionBank: (params?: any) => client.get<any, QuestionBankListResult>('/admin/question-bank', { params }),
+  createQuestion: (data: any) => client.post('/admin/question-bank', data),
+  updateQuestion: (id: number, data: any) => client.put(`/admin/question-bank/${id}`, data),
+  toggleQuestion: (id: number, enabled: boolean) => client.patch(`/admin/question-bank/${id}/toggle`, { enabled }),
 }

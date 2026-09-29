@@ -3,6 +3,7 @@ import random
 from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.deps import require_auth, log_operation
@@ -21,7 +22,7 @@ from app.services.paper_builder import (
 )
 from app.services.interview_core import (
     build_jd_text, build_resume_context, load_interview_context,
-    build_ai_reference_points, get_remaining_seconds,
+    build_ai_reference_points, get_remaining_seconds, mark_question_shown,
     submit_answer_core, finalize_interview
 )
 from app.schemas.common import ResponseModel
@@ -281,6 +282,8 @@ async def create_interview(req: InterviewCreate, current_user: User = Depends(re
         current_question_seq=1,
         total_questions=req.total_questions,
         duration_minutes=req.duration_minutes,
+        purpose=(req.purpose or "NORMAL").upper(),
+        derived_from_id=req.derived_from_id,
         privacy_scope="PRIVATE" if req.type == "PERSONAL_TRAINING" else "COMPANY_AUTHORIZED"
     )
     db.add(interview)
@@ -405,6 +408,9 @@ async def create_interview(req: InterviewCreate, current_user: User = Depends(re
         db.commit()
 
     db.refresh(interview)
+    # 卷面已就绪：记录首题呈现时间，作为服务端单题计时锚点
+    mark_question_shown(interview)
+    db.commit()
 
     source_desc = "题库组卷" if (paper and paper.slots) else "AI 动态生成"
     log_operation(db, current_user.id, current_user.email, "PERSONAL", "CREATE_INTERVIEW",
@@ -430,9 +436,177 @@ def list_interviews(current_user: User = Depends(require_auth), db: Session = De
             "total_questions": i.total_questions,
             "duration_minutes": i.duration_minutes,
             "score": score,
+            "purpose": i.purpose or "NORMAL",
+            "has_report": bool(i.report),
             "created_at": i.created_at.strftime("%Y-%m-%d %H:%M")
         })
     return ResponseModel(data=results)
+
+
+@router.get("/interviews/history-comparison", response_model=ResponseModel[dict])
+def get_history_comparison(job_id: Optional[int] = None, include_retrain: bool = False,
+                           current_user: User = Depends(require_auth), db: Session = Depends(get_db)):
+    """同一岗位多次面试的逐维对比与进步幅度。
+
+    - 默认排除 purpose=RETRAIN 的重练记录，避免重练拉高/扰动成长趋势；
+    - 至少 2 次有效面试才给出 delta 与维度对比，否则返回空态（不做写死兜底）；
+    - 对比口径：同 job_id（未传则用用户目标岗位最近一次面试的 job_id）；无 job_id 的面试不参与同岗位对比。
+    """
+    q = db.query(Interview).filter(
+        Interview.user_id == current_user.id,
+        Interview.status == "COMPLETED"
+    )
+    if not include_retrain:
+        q = q.filter(or_(Interview.purpose.is_(None), Interview.purpose != "RETRAIN"))
+    interviews = q.order_by(Interview.id.asc()).all()
+
+    target_job_id = job_id
+    if not target_job_id:
+        # 未指定岗位时，取用户最近一次有岗位的真实面试作为对比基准
+        for iv in reversed(interviews):
+            if iv.job_id:
+                target_job_id = iv.job_id
+                break
+
+    if not target_job_id:
+        return ResponseModel(data={
+            "job_id": None, "job_title": None, "sessions": [],
+            "dimension_trends": {}, "ready": False,
+            "message": "暂无可对比的同岗位面试记录"
+        })
+
+    reports = (db.query(InterviewReport)
+               .join(Interview, InterviewReport.interview_id == Interview.id)
+               .filter(Interview.user_id == current_user.id,
+                       Interview.job_id == target_job_id)
+               .order_by(InterviewReport.id.asc()).all())
+    if not include_retrain:
+        reports = [r for r in reports if (r.interview.purpose or "NORMAL") != "RETRAIN"]
+
+    if len(reports) < 2:
+        job = db.query(Job).filter(Job.id == target_job_id).first()
+        return ResponseModel(data={
+            "job_id": target_job_id,
+            "job_title": job.title if job else None,
+            "sessions": [{
+                "interview_id": r.interview_id,
+                "score": r.total_score,
+                "mode": r.interview.mode if r.interview else None,
+                "created_at": r.created_at.strftime("%Y-%m-%d"),
+            } for r in reports],
+            "dimension_trends": {}, "ready": False,
+            "message": "同岗位至少需要 2 次完成的面试才能生成对比"
+        })
+
+    sessions, dim_series = [], {}
+    for idx, r in enumerate(reports, start=1):
+        sessions.append({
+            "seq": idx,
+            "interview_id": r.interview_id,
+            "score": r.total_score,
+            "mode": r.interview.mode if r.interview else None,
+            "difficulty": r.interview.difficulty if r.interview else None,
+            "total_questions": r.interview.total_questions if r.interview else None,
+            "created_at": r.created_at.strftime("%Y-%m-%d"),
+        })
+        try:
+            dims = json.loads(r.dimension_scores_json) or {}
+        except Exception:
+            dims = {}
+        for k, v in dims.items():
+            dim_series.setdefault(k, []).append(v)
+
+    dimension_trends = {}
+    for k, vals in dim_series.items():
+        first, last = vals[0], vals[-1]
+        dimension_trends[k] = {
+            "series": [round(v, 1) for v in vals],
+            "delta": round(last - first, 1),
+            "improved": last > first,
+        }
+
+    job = db.query(Job).filter(Job.id == target_job_id).first()
+    total_delta = round(sessions[-1]["score"] - sessions[0]["score"], 1)
+    return ResponseModel(data={
+        "job_id": target_job_id,
+        "job_title": job.title if job else None,
+        "sessions": sessions,
+        "dimension_trends": dimension_trends,
+        "total_delta": total_delta,
+        "session_count": len(sessions),
+        "ready": True,
+        "include_retrain": include_retrain,
+    })
+
+
+@router.get("/interviews/weak-questions", response_model=ResponseModel[dict])
+def get_weak_questions(threshold: float = 60.0, limit: int = 10,
+                       current_user: User = Depends(require_auth), db: Session = Depends(get_db)):
+    """我的薄弱题清单：按题库题目（bank_id）聚合历次作答得分。
+
+    口径：同一 bank_id 取「最近一次得分」判定薄弱（比最低分更符合"现在还不行"的语义），
+    同时返回历史作答次数与最高/最低分供参考；仅统计已完成面试中的题目。
+    """
+    rows = (db.query(InterviewQuestion, AnswerEvaluation, Interview)
+            .join(InterviewAnswer, InterviewAnswer.question_id == InterviewQuestion.id)
+            .join(AnswerEvaluation, AnswerEvaluation.answer_id == InterviewAnswer.id)
+            .join(Interview, Interview.id == InterviewQuestion.interview_id)
+            .filter(Interview.user_id == current_user.id,
+                    Interview.status == "COMPLETED",
+                    InterviewQuestion.bank_id.isnot(None))
+            .order_by(InterviewQuestion.id.asc()).all())
+
+    grouped: dict = {}
+    for q, ev, iv in rows:
+        g = grouped.setdefault(q.bank_id, {
+            "bank_id": q.bank_id, "skill_name": q.skill_name,
+            "question_type": q.question_type, "difficulty": q.difficulty,
+            "text": q.text, "scores": [], "attempts": 0,
+            "last_interview_id": iv.id,
+        })
+        g["scores"].append(ev.total_score)
+        g["attempts"] += 1
+        g["last_interview_id"] = iv.id
+
+    weak = []
+    for g in grouped.values():
+        latest = g["scores"][-1]
+        if latest < threshold:
+            weak.append({
+                "bank_id": g["bank_id"],
+                "skill_name": g["skill_name"],
+                "question_type": g["question_type"],
+                "difficulty": g["difficulty"],
+                "text": g["text"],
+                "attempts": g["attempts"],
+                "latest_score": round(latest, 1),
+                "best_score": round(max(g["scores"]), 1),
+                "worst_score": round(min(g["scores"]), 1),
+                "last_interview_id": g["last_interview_id"],
+            })
+    # 最近得分低者优先，其次作答次数多者优先
+    weak.sort(key=lambda x: (x["latest_score"], -x["attempts"]))
+    weak = weak[:max(1, min(limit, 50))]
+
+    # 校验题目仍在题库中且启用（被停用的题不应再推荐重练）
+    bank_ids = [w["bank_id"] for w in weak]
+    available = set()
+    if bank_ids:
+        for qb in db.query(QuestionBank).filter(
+            QuestionBank.id.in_(bank_ids),
+            QuestionBank.enabled == True  # noqa: E712
+        ).all():
+            available.add(qb.id)
+    retrainable = [w for w in weak if w["bank_id"] in available]
+
+    return ResponseModel(data={
+        "threshold": threshold,
+        "total_attempted_bank_questions": len(grouped),
+        "weak_count": len(retrainable),
+        "items": retrainable,
+        "retrain_bank_ids": [w["bank_id"] for w in retrainable],
+    })
+
 
 @router.get("/interviews/{id}", response_model=ResponseModel[InterviewOut])
 def get_interview(id: int, current_user: User = Depends(require_auth), db: Session = Depends(get_db)):
@@ -463,6 +637,8 @@ def start_interview(id: int, current_user: User = Depends(require_auth), db: Ses
     interview.status = "IN_PROGRESS"
     if not interview.started_at:
         interview.started_at = datetime.utcnow()
+    if not interview.current_question_shown_at:
+        mark_question_shown(interview)
     db.commit()
     return ResponseModel(data={
         "status": interview.status,
@@ -478,6 +654,7 @@ def pause_interview(id: int, current_user: User = Depends(require_auth), db: Ses
 
     state_machine.ensure(interview.status, state_machine.CAN_PAUSE, "暂停面试")
     interview.status = "PAUSED"
+    interview.paused_at = datetime.utcnow()
     db.commit()
     return ResponseModel(data={"status": "PAUSED", "message": "面试已暂停"})
 
@@ -489,6 +666,14 @@ def resume_interview(id: int, current_user: User = Depends(require_auth), db: Se
 
     state_machine.ensure(interview.status, state_machine.CAN_RESUME, "继续面试")
     interview.status = "IN_PROGRESS"
+    # 暂停时长不计入单题用时与整场用时：把锚点整体后移
+    if interview.paused_at:
+        gap = datetime.utcnow() - interview.paused_at
+        if interview.current_question_shown_at:
+            interview.current_question_shown_at += gap
+        if interview.started_at:
+            interview.started_at += gap
+        interview.paused_at = None
     db.commit()
     return ResponseModel(data={
         "status": "IN_PROGRESS",
@@ -520,8 +705,7 @@ async def answer_interview_question(id: int, req: InterviewAnswerRequest, curren
     # 答题、评分、追问、推进统一走核心服务（与 WebSocket 通道共用）
     result = await submit_answer_core(
         db, interview, current_user,
-        text=req.text, duration_sec=req.duration_sec,
-        speaking_rate=req.speaking_rate, filler_count=req.filler_count
+        text=req.text, duration_sec=req.duration_sec
     )
     eval_res = result["eval_res"]
     next_q = result["next_question"]
@@ -542,7 +726,11 @@ async def answer_interview_question(id: int, req: InterviewAnswerRequest, curren
         is_finished=result["finished"],
         report_id=result.get("report_id"),
         remaining_seconds=result["remaining_seconds"],
-        total_questions=interview.total_questions
+        total_questions=interview.total_questions,
+        raw_score=result.get("raw_score"),
+        overtime=result.get("overtime", False),
+        overtime_sec=result.get("overtime_sec", 0),
+        is_empty=result.get("is_empty", False)
     ))
 
 @router.post("/interviews/{id}/finish", response_model=ResponseModel[dict])
@@ -589,6 +777,7 @@ def get_interview_report(id: int, current_user: User = Depends(require_auth), db
 
     # Questions breakdown
     q_analysis = []
+    per_question_time = []
     for q in sorted(interview.questions, key=lambda x: x.seq):
         if q.answer and q.answer.evaluation:
             e = q.answer.evaluation
@@ -598,6 +787,10 @@ def get_interview_report(id: int, current_user: User = Depends(require_auth), db
                     ref_points = []
             except Exception:
                 ref_points = []
+            limit = q.time_limit_sec or 180
+            used = q.answer.duration_sec or 0
+            is_ot = bool(q.answer.overtime) or used > limit
+            ot_sec = q.answer.overtime_sec or (max(0, used - limit) if is_ot else 0)
             q_analysis.append({
                 "seq": q.seq,
                 "question": q.text,
@@ -609,11 +802,41 @@ def get_interview_report(id: int, current_user: User = Depends(require_auth), db
                 "difficulty": q.difficulty,
                 "source": q.source or "QUESTION_BANK",
                 "reference_points": ref_points,
+                "duration_sec": used,
+                "time_limit_sec": limit,
+                "overtime": is_ot,
+                "overtime_sec": ot_sec,
+                "is_empty": not (q.answer.text or "").strip(),
                 "evidence": json.loads(e.evidence_json) if e.evidence_json else [],
                 "weaknesses": json.loads(e.weaknesses_json) if e.weaknesses_json else [],
                 "missing_knowledge": json.loads(e.missing_knowledge_json) if e.missing_knowledge_json else [],
                 "suggestions": json.loads(e.suggestions_json) if e.suggestions_json else []
             })
+            per_question_time.append({
+                "seq": q.seq, "skill_name": q.skill_name,
+                "duration_sec": used, "time_limit_sec": limit,
+                "usage_ratio": round(used / limit, 2) if limit else 0,
+                "overtime": is_ot, "overtime_sec": ot_sec,
+            })
+
+    # 时间维度汇总：用时分布与超时率（服务端口径）
+    time_analysis = None
+    if per_question_time:
+        durs = [p["duration_sec"] for p in per_question_time]
+        ot_items = [p for p in per_question_time if p["overtime"]]
+        ratios = [p["usage_ratio"] for p in per_question_time]
+        time_analysis = {
+            "items": per_question_time,
+            "total_answered": len(per_question_time),
+            "total_time_sec": sum(durs),
+            "avg_time_sec": round(sum(durs) / len(durs), 1),
+            "max_time_sec": max(durs),
+            "min_time_sec": min(durs),
+            "overtime_count": len(ot_items),
+            "overtime_rate": round(len(ot_items) / len(per_question_time), 2),
+            "avg_usage_ratio": round(sum(ratios) / len(ratios), 2),
+            "overtime_skills": sorted({p["skill_name"] for p in ot_items}),
+        }
 
     return ResponseModel(data=InterviewReportOut(
         id=report.id,
@@ -631,5 +854,6 @@ def get_interview_report(id: int, current_user: User = Depends(require_auth), db
         summary=report.summary,
         status=report.status,
         created_at=report.created_at,
-        questions_analysis=q_analysis
+        questions_analysis=q_analysis,
+        time_analysis=time_analysis
     ))

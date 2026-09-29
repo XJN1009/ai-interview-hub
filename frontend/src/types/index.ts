@@ -118,6 +118,79 @@ export interface InterviewSession {
   current_question?: InterviewQuestionView
 }
 
+export interface QuestionBankItem {
+  id: number
+  job_category: string
+  question_type: string
+  skill_name: string
+  stage: string
+  difficulty: string
+  text: string
+  reference_points: string[]
+  hints?: string | null
+  time_limit_sec: number
+  source: string
+  enabled: boolean
+  usage_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface QuestionBankListResult {
+  items: QuestionBankItem[]
+  total: number
+  page: number
+  page_size: number
+  categories: string[]
+  stats: {
+    total: number
+    enabled: number
+    by_type: Record<string, number>
+    by_category: Record<string, number>
+  }
+}
+
+export interface HistoryComparison {
+  job_id: number | null
+  job_title: string | null
+  sessions: {
+    seq?: number
+    interview_id: number
+    score: number
+    mode?: string
+    difficulty?: string
+    total_questions?: number
+    created_at: string
+  }[]
+  dimension_trends: Record<string, { series: number[]; delta: number; improved: boolean }>
+  total_delta?: number
+  session_count?: number
+  ready: boolean
+  include_retrain?: boolean
+  message?: string
+}
+
+export interface WeakQuestionItem {
+  bank_id: number
+  skill_name: string
+  question_type: string
+  difficulty: string
+  text: string
+  attempts: number
+  latest_score: number
+  best_score: number
+  worst_score: number
+  last_interview_id: number
+}
+
+export interface WeakQuestionsResult {
+  threshold: number
+  total_attempted_bank_questions: number
+  weak_count: number
+  items: WeakQuestionItem[]
+  retrain_bank_ids: number[]
+}
+
 export interface PaperPreview {
   mode: string
   total_questions: number
@@ -166,9 +239,34 @@ export interface InterviewReportData {
     difficulty?: string
     source?: string
     reference_points?: string[]
+    duration_sec?: number
+    time_limit_sec?: number
+    overtime?: boolean
+    overtime_sec?: number
+    is_empty?: boolean
     evidence: string[]
     weaknesses: string[]
     missing_knowledge: string[]
     suggestions: string[]
   }[]
+  time_analysis?: {
+    items: {
+      seq: number
+      skill_name: string
+      duration_sec: number
+      time_limit_sec: number
+      usage_ratio: number
+      overtime: boolean
+      overtime_sec: number
+    }[]
+    total_answered: number
+    total_time_sec: number
+    avg_time_sec: number
+    max_time_sec: number
+    min_time_sec: number
+    overtime_count: number
+    overtime_rate: number
+    avg_usage_ratio: number
+    overtime_skills: string[]
+  } | null
 }

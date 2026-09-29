@@ -111,34 +111,34 @@
         <div class="device-checks">
           <div class="check-item">
             <div class="chk-left">
-              <el-icon :size="20" color="#10B981"><VideoCamera /></el-icon>
-              <span>摄像头状态</span>
+              <el-icon :size="20" :color="device.camera.ok ? '#10B981' : '#94A3B8'"><VideoCamera /></el-icon>
+              <span>摄像头</span>
             </div>
-            <el-tag type="success" size="small">准备就绪 (支持文本模式)</el-tag>
+            <el-tag :type="device.camera.ok ? 'success' : 'info'" size="small">{{ device.camera.text }}</el-tag>
           </div>
 
           <div class="check-item">
             <div class="chk-left">
-              <el-icon :size="20" color="#10B981"><Microphone /></el-icon>
-              <span>麦克风录音</span>
+              <el-icon :size="20" :color="device.mic.ok ? '#10B981' : '#94A3B8'"><Microphone /></el-icon>
+              <span>麦克风语音作答</span>
             </div>
-            <el-tag type="success" size="small">正常响应 (支持实时转写)</el-tag>
+            <el-tag :type="device.mic.ok ? 'success' : 'warning'" size="small">{{ device.mic.text }}</el-tag>
           </div>
 
           <div class="check-item">
             <div class="chk-left">
-              <el-icon :size="20" color="#10B981"><Headset /></el-icon>
-              <span>扬声器/耳机</span>
+              <el-icon :size="20" :color="device.speaker.ok ? '#10B981' : '#94A3B8'"><Headset /></el-icon>
+              <span>题目朗读</span>
             </div>
-            <el-tag type="success" size="small">声音播放正常</el-tag>
+            <el-tag :type="device.speaker.ok ? 'success' : 'info'" size="small">{{ device.speaker.text }}</el-tag>
           </div>
 
           <div class="check-item">
             <div class="chk-left">
-              <el-icon :size="20" color="#10B981"><Connection /></el-icon>
-              <span>实时双向网络</span>
+              <el-icon :size="20" :color="device.network.ok ? '#10B981' : '#EF4444'"><Connection /></el-icon>
+              <span>后端连接</span>
             </div>
-            <el-tag type="success" size="small">延迟 25ms (优秀)</el-tag>
+            <el-tag :type="device.network.ok ? 'success' : 'danger'" size="small">{{ device.network.text }}</el-tag>
           </div>
         </div>
 
@@ -275,6 +275,66 @@ const handlePreviewPaper = async () => {
   }
 }
 
+/* ---------- 设备与环境真实检测（不自动弹权限，仅能力探测 + 连通性实测） ---------- */
+const device = reactive({
+  camera: { ok: false, text: '检测中...' },
+  mic: { ok: false, text: '检测中...' },
+  speaker: { ok: false, text: '检测中...' },
+  network: { ok: false, text: '检测中...' }
+})
+
+const detectEnvironment = async () => {
+  const secure = window.isSecureContext
+  const hasMedia = !!navigator.mediaDevices?.getUserMedia
+
+  // 摄像头 / 麦克风：用枚举设备判断"是否存在"，不触发授权弹窗
+  try {
+    if (!hasMedia) {
+      device.camera = { ok: false, text: secure ? '浏览器不支持' : '需 HTTPS/localhost' }
+      device.mic = { ok: false, text: secure ? '浏览器不支持' : '需 HTTPS/localhost' }
+    } else {
+      const devs = await navigator.mediaDevices.enumerateDevices()
+      const cams = devs.filter(d => d.kind === 'videoinput').length
+      const mics = devs.filter(d => d.kind === 'audioinput').length
+      device.camera = cams > 0
+        ? { ok: true, text: `检测到 ${cams} 个（可文本作答）` }
+        : { ok: false, text: '未检测到摄像头' }
+      device.mic = mics > 0
+        ? { ok: true, text: `检测到 ${mics} 个${speechRecognitionAvailable() ? '，支持语音转写' : ''}` }
+        : { ok: false, text: '未检测到麦克风' }
+    }
+  } catch {
+    device.camera = { ok: false, text: '无权限枚举设备' }
+    device.mic = { ok: false, text: '无权限枚举设备' }
+  }
+
+  // 题目朗读：浏览器原生 TTS 能力
+  const tts = 'speechSynthesis' in window
+  device.speaker = tts
+    ? { ok: true, text: '支持题目朗读' }
+    : { ok: false, text: '浏览器不支持朗读' }
+
+  // 语音转写能力提示（合并进麦克风一行文案，避免额外占位）
+  if (device.mic.ok && !speechRecognitionAvailable()) {
+    device.mic.text = '检测到麦克风，但浏览器不支持语音转写'
+  }
+
+  // 后端连通性：实测一次真实往返延迟（走 api 层，自动带 token），而非写死数字
+  const t0 = performance.now()
+  try {
+    await interviewApi.getBankStats()
+    const rtt = Math.round(performance.now() - t0)
+    device.network = { ok: true, text: `服务正常，往返 ${rtt}ms` }
+  } catch {
+    device.network = { ok: false, text: '无法连接后端服务' }
+  }
+}
+
+const speechRecognitionAvailable = () => {
+  const w = window as any
+  return !!(w.SpeechRecognition || w.webkitSpeechRecognition)
+}
+
 // 面试配置变化后，先前的考卷选择失效
 watch(
   () => [form.mode, form.difficulty, form.total_questions, form.job_id, form.use_question_bank],
@@ -337,6 +397,8 @@ onMounted(async () => {
   } catch (e) {
     // handled
   }
+  // 设备与环境真实检测（内部已兜底，不影响页面可用性）
+  detectEnvironment()
 })
 
 const handleStartInterview = async () => {

@@ -53,6 +53,10 @@ async def handle_interview_websocket(websocket: WebSocket, interview_id: int):
 
         jd_text, resume_context = load_interview_context(interview, db)
         reveal = interview.status in ("COMPLETED", "CANCELLED", "EXPIRED")
+        # 服务端单题计时锚点：连接即视为当前题已呈现（未开始/已终态除外）
+        if interview.status in ("IN_PROGRESS", "PAUSED") and not interview.current_question_shown_at:
+            interview.current_question_shown_at = datetime.utcnow()
+            db.commit()
 
         await manager.send_json(interview_id, {
             "type": "connected",
@@ -94,9 +98,7 @@ async def handle_interview_websocket(websocket: WebSocket, interview_id: int):
                     result = await submit_answer_core(
                         db, interview, user,
                         text=answer_text,
-                        duration_sec=data.get("duration_sec"),
-                        speaking_rate=data.get("speaking_rate"),
-                        filler_count=data.get("filler_count")
+                        duration_sec=data.get("duration_sec")
                     )
                 except Exception as e:
                     # HTTPException 或其他错误统一以事件下发，不断开连接
@@ -112,6 +114,10 @@ async def handle_interview_websocket(websocket: WebSocket, interview_id: int):
                     "type": "evaluation",
                     "answer_id": result["answer"].id,
                     "total_score": eval_res["score"],
+                    "raw_score": result.get("raw_score"),
+                    "overtime": result.get("overtime", False),
+                    "overtime_sec": result.get("overtime_sec", 0),
+                    "is_empty": result.get("is_empty", False),
                     "dimensions": eval_res["dimensions"],
                     "evidence": eval_res["evidence"],
                     "weaknesses": eval_res["weaknesses"],
@@ -142,6 +148,7 @@ async def handle_interview_websocket(websocket: WebSocket, interview_id: int):
                 try:
                     state_machine.ensure(interview.status, state_machine.CAN_PAUSE, "暂停面试")
                     interview.status = "PAUSED"
+                    interview.paused_at = datetime.utcnow()
                     db.commit()
                     await manager.send_json(interview_id, {"type": "paused"})
                 except Exception as e:
@@ -153,6 +160,14 @@ async def handle_interview_websocket(websocket: WebSocket, interview_id: int):
                 try:
                     state_machine.ensure(interview.status, state_machine.CAN_RESUME, "继续面试")
                     interview.status = "IN_PROGRESS"
+                    # 暂停时长不计入单题与整场用时：锚点整体后移
+                    if interview.paused_at:
+                        gap = datetime.utcnow() - interview.paused_at
+                        if interview.current_question_shown_at:
+                            interview.current_question_shown_at += gap
+                        if interview.started_at:
+                            interview.started_at += gap
+                        interview.paused_at = None
                     db.commit()
                     await manager.send_json(interview_id, {
                         "type": "resumed",

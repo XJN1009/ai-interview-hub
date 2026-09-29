@@ -2,6 +2,7 @@ import json
 from datetime import datetime
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import verify_password, create_access_token, create_refresh_token
@@ -11,9 +12,11 @@ from app.models.company import Company, CompanyVerification
 from app.models.job import Job
 from app.models.application import Application
 from app.models.interview import Interview
+from app.models.question import QuestionBank
 from app.models.system import Complaint, OperationLog, AICallLog, Notification
 from app.schemas.common import ResponseModel, PaginatedData
 from app.schemas.auth import LoginRequest, TokenResponse
+from app.schemas.question import QuestionBankUpsertRequest, QuestionBankToggleRequest
 
 router = APIRouter(tags=["平台管理后台"])
 
@@ -429,3 +432,170 @@ def list_audit_logs(admin: User = Depends(require_roles(["PLATFORM_ADMIN", "SUPE
         }
         for l in logs
     ])
+
+
+# ==================== 结构化题库管理（M08 内容配置） ====================
+# 说明：
+# - 编辑/新增题目不影响历史面试：组卷时题干与要点已复制快照到 InterviewQuestion；
+# - 只提供"启用/停用"，不做物理删除：bank_id 被追问题卷与错题清单引用；
+# - 灌库脚本 --rebuild 只清理 source=SEED 的题目，人工新增（MANUAL）不会丢失。
+
+def _qb_to_dict(q) -> dict:
+    try:
+        points = json.loads(q.reference_points_json) if q.reference_points_json else []
+        if not isinstance(points, list):
+            points = []
+    except Exception:
+        points = []
+    return {
+        "id": q.id,
+        "job_category": q.job_category,
+        "question_type": q.question_type,
+        "skill_name": q.skill_name,
+        "stage": q.stage,
+        "difficulty": q.difficulty,
+        "text": q.text,
+        "reference_points": points,
+        "hints": q.hints,
+        "time_limit_sec": q.time_limit_sec,
+        "source": q.source,
+        "enabled": q.enabled,
+        "usage_count": q.usage_count,
+        "created_at": q.created_at,
+        "updated_at": q.updated_at,
+    }
+
+
+@router.get("/admin/question-bank", response_model=ResponseModel[dict])
+def list_question_bank(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    keyword: Optional[str] = None,
+    job_category: Optional[str] = None,
+    question_type: Optional[str] = None,
+    difficulty: Optional[str] = None,
+    enabled: Optional[bool] = None,
+    admin: User = Depends(require_roles(["PLATFORM_ADMIN", "SUPER_ADMIN"])),
+    db: Session = Depends(get_db),
+):
+    """题库列表：分页 + 筛选（题干关键词/岗位大类/题型/难度/启用状态）。"""
+    query = db.query(QuestionBank)
+    if keyword:
+        kw = f"%{keyword.strip()}%"
+        query = query.filter(or_(QuestionBank.text.like(kw), QuestionBank.skill_name.like(kw)))
+    if job_category:
+        query = query.filter(QuestionBank.job_category == job_category)
+    if question_type:
+        query = query.filter(QuestionBank.question_type == question_type)
+    if difficulty:
+        query = query.filter(QuestionBank.difficulty == difficulty)
+    if enabled is not None:
+        query = query.filter(QuestionBank.enabled == enabled)
+
+    total = query.count()
+    rows = query.order_by(QuestionBank.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
+
+    # 全量分类统计（供筛选下拉与概览卡片）
+    all_rows = db.query(QuestionBank).all()
+    categories = sorted({r.job_category for r in all_rows})
+    stats = {
+        "total": len(all_rows),
+        "enabled": sum(1 for r in all_rows if r.enabled),
+        "by_type": {},
+        "by_category": {},
+    }
+    for r in all_rows:
+        stats["by_type"][r.question_type] = stats["by_type"].get(r.question_type, 0) + 1
+        stats["by_category"][r.job_category] = stats["by_category"].get(r.job_category, 0) + 1
+
+    return ResponseModel(data={
+        "items": [_qb_to_dict(r) for r in rows],
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "categories": categories,
+        "stats": stats,
+    })
+
+
+@router.post("/admin/question-bank", response_model=ResponseModel[dict])
+def create_question(
+    req: QuestionBankUpsertRequest,
+    admin: User = Depends(require_roles(["PLATFORM_ADMIN", "SUPER_ADMIN"])),
+    db: Session = Depends(get_db),
+):
+    """新增题目（source=MANUAL，不被 --rebuild 清库影响）。"""
+    dup = db.query(QuestionBank).filter(QuestionBank.text == req.text.strip()).first()
+    if dup:
+        raise HTTPException(status_code=400, detail="题干内容与已有题目完全相同")
+    q = QuestionBank(
+        job_category=req.job_category.strip(),
+        question_type=req.question_type,
+        skill_name=req.skill_name.strip(),
+        stage=req.stage.strip(),
+        difficulty=req.difficulty,
+        text=req.text.strip(),
+        reference_points_json=json.dumps(req.reference_points, ensure_ascii=False),
+        hints=(req.hints or None),
+        time_limit_sec=req.time_limit_sec,
+        source="MANUAL",
+        enabled=req.enabled,
+    )
+    db.add(q)
+    db.commit()
+    db.refresh(q)
+    log_operation(db, admin.id, admin.email, "ADMIN", "CREATE_QUESTION", "QUESTION_BANK", q.id,
+                  f"新增题库题目【{q.job_category}/{q.question_type}】")
+    return ResponseModel(data=_qb_to_dict(q))
+
+
+@router.put("/admin/question-bank/{id}", response_model=ResponseModel[dict])
+def update_question(
+    id: int,
+    req: QuestionBankUpsertRequest,
+    admin: User = Depends(require_roles(["PLATFORM_ADMIN", "SUPER_ADMIN"])),
+    db: Session = Depends(get_db),
+):
+    """编辑题目元信息。注意：仅影响之后的组卷，历史面试卷面快照不变。"""
+    q = db.query(QuestionBank).filter(QuestionBank.id == id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="题目不存在")
+    dup = db.query(QuestionBank).filter(
+        QuestionBank.text == req.text.strip(), QuestionBank.id != id).first()
+    if dup:
+        raise HTTPException(status_code=400, detail="题干内容与另一道已有题目完全相同")
+
+    q.job_category = req.job_category.strip()
+    q.question_type = req.question_type
+    q.skill_name = req.skill_name.strip()
+    q.stage = req.stage.strip()
+    q.difficulty = req.difficulty
+    q.text = req.text.strip()
+    q.reference_points_json = json.dumps(req.reference_points, ensure_ascii=False)
+    q.hints = req.hints or None
+    q.time_limit_sec = req.time_limit_sec
+    q.enabled = req.enabled
+    db.commit()
+    db.refresh(q)
+    log_operation(db, admin.id, admin.email, "ADMIN", "UPDATE_QUESTION", "QUESTION_BANK", q.id,
+                  f"编辑题库题目（source={q.source}）")
+    return ResponseModel(data=_qb_to_dict(q))
+
+
+@router.patch("/admin/question-bank/{id}/toggle", response_model=ResponseModel[dict])
+def toggle_question(
+    id: int,
+    req: QuestionBankToggleRequest,
+    admin: User = Depends(require_roles(["PLATFORM_ADMIN", "SUPER_ADMIN"])),
+    db: Session = Depends(get_db),
+):
+    """启用/停用题目（不做物理删除：bank_id 被历史卷面与错题清单引用）。"""
+    q = db.query(QuestionBank).filter(QuestionBank.id == id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="题目不存在")
+    q.enabled = req.enabled
+    db.commit()
+    log_operation(db, admin.id, admin.email, "ADMIN",
+                  "ENABLE_QUESTION" if req.enabled else "DISABLE_QUESTION",
+                  "QUESTION_BANK", q.id, f"题目{'启用' if req.enabled else '停用'}")
+    return ResponseModel(data={"id": q.id, "enabled": q.enabled})

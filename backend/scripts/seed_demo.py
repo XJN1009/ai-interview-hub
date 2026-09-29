@@ -741,8 +741,9 @@ def seed(reset=True):
                 user_id=u_student.id,
                 text=q_tpl[4],
                 duration_sec=50 + q_tpl[0] * 2,
-                speaking_rate=158 + (q_tpl[0] % 5),
-                filler_count=q_tpl[0] % 2
+                # 语音指标未接入真实分析：0 = 未测量（不再灌假数据）
+                speaking_rate=0,
+                filler_count=0
             )
             db.add(a)
             db.commit()
@@ -848,8 +849,9 @@ def seed(reset=True):
                 user_id=u_student.id,
                 text=q_tpl[4],
                 duration_sec=55,
-                speaking_rate=160,
-                filler_count=1
+                # 语音指标未接入真实分析：0 = 未测量（不再灌假数据）
+                speaking_rate=0,
+                filler_count=0
             )
             db.add(ea)
             db.commit()

@@ -89,6 +89,62 @@ def get_remaining_seconds(interview: Interview) -> Optional[int]:
     return max(0, total - elapsed)
 
 
+# 超时轻扣分：每超时 30 秒扣 3 分，最多扣 15 分（惩罚紧张学生但不归零）
+OVERTIME_PENALTY_PER_30S = 3.0
+OVERTIME_PENALTY_MAX = 15.0
+
+
+def mark_question_shown(interview: Interview) -> None:
+    """记录当前题呈现时间（服务端单题计时锚点）。"""
+    interview.current_question_shown_at = datetime.utcnow()
+
+
+def measure_question_usage(interview: Interview, question: InterviewQuestion,
+                           client_duration: Optional[int]) -> Tuple[int, int, bool]:
+    """服务端口径计算本题真实用时。
+
+    返回 (真实用时秒, 超时秒, 是否超时)。
+    - 有呈现时间：以 utcnow - shown_at 为准（不信任客户端上报）；
+    - 无呈现时间（历史数据/旧会话）：退回客户端上报值。
+    """
+    limit = question.time_limit_sec or 180
+    if interview.current_question_shown_at:
+        elapsed = int((datetime.utcnow() - interview.current_question_shown_at).total_seconds())
+        elapsed = max(0, min(elapsed, 3600))
+    else:
+        elapsed = max(0, min(int(client_duration or 0), 3600))
+    overtime_sec = max(0, elapsed - limit)
+    return elapsed, overtime_sec, overtime_sec > 0
+
+
+def apply_overtime_penalty(score: float, overtime_sec: int) -> float:
+    """超时轻扣分：按比例扣分并设下限，保证不因超时直接归零。"""
+    if overtime_sec <= 0:
+        return score
+    penalty = min(OVERTIME_PENALTY_MAX,
+                  (overtime_sec // 30 + (1 if overtime_sec % 30 else 0)) * OVERTIME_PENALTY_PER_30S)
+    return round(max(0.0, score - penalty), 1)
+
+
+def empty_answer_evaluation(question_text: str) -> Dict[str, Any]:
+    """空作答：直接 0 分并给出明确提示，不消耗一次 LLM 调用。"""
+    return {
+        "score": 0.0,
+        "dimensions": {
+            "professional": 0.0, "relevance": 0.0, "completeness": 0.0,
+            "logic": 0.0, "depth": 0.0, "communication": 0.0,
+        },
+        "evidence": ["本次未提交任何有效作答内容，无法进行能力评估"],
+        "weaknesses": ["空作答：可能是主动放弃、时间不足或对题目完全陌生"],
+        "missing_knowledge": ["需先厘清题目考察的核心概念，再组织至少 3 句的结构化回答"],
+        "suggestions": [
+            "面试中即使不确定，也应先复述问题要点、再给出思路框架与已知相关信息，避免留白",
+            f"回顾题目：{question_text[:60]}{'…' if len(question_text) > 60 else ''}"
+        ],
+        "next_action": "BASIC",
+    }
+
+
 def build_ai_reference_points(job_title: str, question_text: str) -> List[str]:
     """AI 动态生成题的参考答案要点兜底（无预置要点时给出通用复盘指引）。"""
     return [
@@ -200,8 +256,7 @@ async def _maybe_followup(
 
 async def submit_answer_core(
     db: Session, interview: Interview, user: User,
-    text: str, duration_sec: Optional[int] = None,
-    speaking_rate: Optional[int] = None, filler_count: Optional[int] = None
+    text: str, duration_sec: Optional[int] = None
 ) -> Dict[str, Any]:
     """当前题作答 → 评分 → 落库 → （可能的追问）→ 推进下一题。REST/WS 共用。"""
     state_machine.ensure(interview.status, state_machine.ANSWERABLE, "提交作答")
@@ -222,26 +277,30 @@ async def submit_answer_core(
             detail=f"第 {curr_q.seq} 题已完成作答与评分，不能重复提交"
         )
 
-    # 用时以客户端上报为准，但服务端限幅防脏数据
-    if duration_sec is None:
-        duration_sec = 0
-    duration_sec = max(0, min(int(duration_sec), 3600))
-
     if interview.status == "READY":
         interview.status = "IN_PROGRESS"
         if not interview.started_at:
             interview.started_at = datetime.utcnow()
+        if not interview.current_question_shown_at:
+            mark_question_shown(interview)
+        db.commit()
+
+    # 服务端单题计时与超时判定（不信任客户端上报；无锚点时退回客户端值）
+    real_duration, overtime_sec, is_overtime = measure_question_usage(
+        interview, curr_q, duration_sec)
+    duration_sec = real_duration
 
     answer = existing_answer
     if not answer:
+        # 语音指标未接入真实分析：显式写 0（含义为"未测量"），不再沿用模型默认值 160/2 的假数据
         answer = InterviewAnswer(
             question_id=curr_q.id,
             interview_id=interview.id,
             user_id=user.id,
             text=text,
             duration_sec=duration_sec,
-            speaking_rate=speaking_rate if speaking_rate is not None else 0,
-            filler_count=filler_count if filler_count is not None else 0
+            speaking_rate=0,
+            filler_count=0
         )
         db.add(answer)
         db.commit()
@@ -252,13 +311,31 @@ async def submit_answer_core(
         answer.duration_sec = duration_sec
         db.commit()
 
+    answer.overtime = is_overtime
+    answer.overtime_sec = overtime_sec
+    db.commit()
+
     jd_text, resume_context = load_interview_context(interview, db)
-    eval_res = await ai_provider.evaluate_answer(
-        curr_q.text, text, curr_q.seq,
-        jd_text=jd_text or None,
-        resume_context=resume_context or None,
-        reference_points=parse_ref_points(curr_q.reference_points_json)
-    )
+    is_empty = not (text or "").strip()
+    if is_empty:
+        # 空作答：直接 0 分并明确提示，不消耗 LLM 调用
+        eval_res = empty_answer_evaluation(curr_q.text)
+    else:
+        eval_res = await ai_provider.evaluate_answer(
+            curr_q.text, text, curr_q.seq,
+            jd_text=jd_text or None,
+            resume_context=resume_context or None,
+            reference_points=parse_ref_points(curr_q.reference_points_json)
+        )
+
+    raw_score = eval_res["score"]
+    if not is_empty and is_overtime:
+        # 超时轻扣分（不归零）：空作答已 0 分，无需再扣
+        eval_res["score"] = apply_overtime_penalty(raw_score, overtime_sec)
+        eval_res["evidence"] = list(eval_res.get("evidence") or []) + [
+            f"本题超出建议限时 {overtime_sec} 秒，按超时规则轻扣分 "
+            f"（{raw_score} → {eval_res['score']}），未作答完不直接归零"
+        ]
 
     eval_obj = db.query(AnswerEvaluation).filter(AnswerEvaluation.answer_id == answer.id).first()
     if not eval_obj:
@@ -329,11 +406,13 @@ async def submit_answer_core(
 
     if next_q is not None:
         interview.current_question_seq = next_q.seq
+        mark_question_shown(interview)  # 新题呈现，单题计时重新开始
         db.commit()
 
     finished = next_q is None
     report_id = None
     if finished:
+        interview.current_question_shown_at = None
         interview.status = "COMPLETED"
         interview.ended_at = datetime.utcnow()
         db.commit()
@@ -348,6 +427,10 @@ async def submit_answer_core(
         "is_followup": followup is not None and next_q is followup,
         "finished": finished,
         "report_id": report_id,
+        "raw_score": raw_score,
+        "overtime": is_overtime,
+        "overtime_sec": overtime_sec,
+        "is_empty": is_empty,
         "remaining_seconds": get_remaining_seconds(interview),
     }
 

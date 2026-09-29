@@ -16,8 +16,14 @@ class Interview(Base):
     type = Column(String(50), default="PERSONAL_TRAINING", nullable=False) # PERSONAL_TRAINING, ENTERPRISE_RECRUITMENT
     mode = Column(String(50), default="COMPREHENSIVE", nullable=False)     # COMPREHENSIVE, TECHNICAL, PROJECT_DEEP_DIVE, BEHAVIORAL, STRESS
     difficulty = Column(String(50), default="MEDIUM", nullable=False)      # EASY, MEDIUM, HARD
+    # NORMAL 常规面试 / RETRAIN 薄弱题重练：成长曲线默认排除重练记录，避免污染趋势
+    purpose = Column(String(30), default="NORMAL", nullable=False)
+    derived_from_id = Column(Integer, nullable=True)  # 重练来源面试 ID（可空）
     status = Column(String(50), default="CREATED", nullable=False)         # CREATED, READY, IN_PROGRESS, PAUSED, COMPLETED, CANCELLED, EXPIRED
     current_question_seq = Column(Integer, default=1, nullable=False)
+    # 当前题呈现时间：服务端据此计算单题真实用时与超时判定（不信任客户端上报）
+    current_question_shown_at = Column(DateTime, nullable=True)
+    paused_at = Column(DateTime, nullable=True)  # 暂停时刻：恢复时把暂停时长从呈现时间中剔除
     total_questions = Column(Integer, default=5, nullable=False)
     privacy_scope = Column(String(50), default="PRIVATE", nullable=False)  # PRIVATE, COMPANY_AUTHORIZED
     duration_minutes = Column(Integer, default=30, nullable=False)
@@ -79,10 +85,14 @@ class InterviewAnswer(Base):
     interview_id = Column(Integer, ForeignKey("interviews.id"), nullable=False)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     text = Column(Text, nullable=False)
-    audio_file_id = Column(String(100), nullable=True)
+    audio_file_id = Column(String(100), nullable=True)  # 预留：语音链路未接入，恒为 NULL
     duration_sec = Column(Integer, default=45, nullable=False)
-    speaking_rate = Column(Integer, default=160, nullable=False)  # words per min
-    filler_count = Column(Integer, default=2, nullable=False)
+    # 单题超时标记与超时秒数：服务端按 current_question_shown_at 判定，轻扣分不归零
+    overtime = Column(Boolean, default=False, nullable=False)
+    overtime_sec = Column(Integer, default=0, nullable=False)
+    # 0 = 未测量。语音分析（语速/语气词）未接入前不写入假指标，历史假数据已由迁移清洗
+    speaking_rate = Column(Integer, default=0, nullable=False)  # words per min
+    filler_count = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     question = relationship("InterviewQuestion", back_populates="answer")

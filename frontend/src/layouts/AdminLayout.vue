@@ -49,6 +49,10 @@
             <el-icon><Tickets /></el-icon>
             <span>首页与公告配置</span>
           </el-menu-item>
+          <el-menu-item index="/admin/question-bank">
+            <el-icon><Collection /></el-icon>
+            <span>结构化题库管理</span>
+          </el-menu-item>
           <el-menu-item index="/admin/ai">
             <el-icon><Cpu /></el-icon>
             <span>AI 服务与脱敏日志</span>
@@ -72,7 +76,7 @@
 import { useAuthStore } from '@/stores/auth'
 import {
   Cpu, Odometer, User, OfficeBuilding, Check, DocumentChecked,
-  Warning, Tickets, Lock
+  Warning, Tickets, Lock, Collection
 } from '@element-plus/icons-vue'
 
 const authStore = useAuthStore()

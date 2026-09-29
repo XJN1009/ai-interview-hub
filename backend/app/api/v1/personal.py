@@ -398,65 +398,51 @@ def get_competency_evidence(skillId: str, current_user: User = Depends(require_a
     })
 
 @router.get("/personal/growth", response_model=ResponseModel[dict])
-def get_growth_center(period: str = "30d", current_user: User = Depends(require_auth), db: Session = Depends(get_db)):
-    interviews = db.query(InterviewReport).filter(
+def get_growth_center(period: str = "30d", include_retrain: bool = False,
+                      current_user: User = Depends(require_auth), db: Session = Depends(get_db)):
+    """成长中心：全部为真实聚合，无数据返回空态（不再写死 68/74/82 假趋势）。
+
+    默认排除 purpose=RETRAIN 的薄弱题重练记录，避免重练扰动成长曲线。
+    """
+    reports = db.query(InterviewReport).filter(
         InterviewReport.user_id == current_user.id
     ).order_by(InterviewReport.id.asc()).all()
+    if not include_retrain:
+        reports = [r for r in reports
+                   if (r.interview.purpose or "NORMAL") != "RETRAIN" if r.interview]
 
     history = [
-        {"date": "第1次面试", "score": 68},
-        {"date": "第2次面试", "score": 74},
-        {"date": "第3次面试", "score": 82}
+        {"date": f"第{idx+1}次面试", "score": r.total_score,
+         "interview_id": r.interview_id,
+         "created_at": r.created_at.strftime("%Y-%m-%d")}
+        for idx, r in enumerate(reports)
     ]
-    if interviews:
-        history = [
-            {"date": f"第{idx+1}次面试", "score": rep.total_score}
-            for idx, rep in enumerate(interviews)
-        ]
 
-    # Dynamic skill progressions from CompetencyHistory
+    # 技能进步曲线：来自真实 CompetencyHistory（面试结算写入）
     comp_history_records = db.query(CompetencyHistory).filter(
         CompetencyHistory.user_id == current_user.id
     ).order_by(CompetencyHistory.created_at.asc()).all()
 
-    skill_prog_map = {}
+    skill_prog_map: dict = {}
     for ch in comp_history_records:
-        name = ch.competency_name
-        if name not in skill_prog_map:
-            skill_prog_map[name] = []
-        skill_prog_map[name].append(ch.score)
+        skill_prog_map.setdefault(ch.competency_name, []).append(ch.score)
 
     skill_progressions = []
     for skill_name, scores in skill_prog_map.items():
         int_scores = [str(int(s)) for s in scores]
+        path = " → ".join(int_scores) if len(int_scores) > 1 else f"{int_scores[0]}（单次记录）"
         skill_progressions.append({
             "skill": skill_name,
-            "history_path": " → ".join(int_scores),
-            "current": int(scores[-1])
+            "history_path": path,
+            "current": int(scores[-1]),
+            "samples": len(scores)
         })
+    skill_progressions.sort(key=lambda x: -x["samples"])
 
-    if not skill_progressions:
-        user_comps = db.query(UserCompetency).filter(UserCompetency.user_id == current_user.id).all()
-        if user_comps:
-            for uc in user_comps[:4]:
-                cur = int(uc.score)
-                prev = max(40, cur - 15)
-                skill_progressions.append({
-                    "skill": uc.competency_name,
-                    "history_path": f"{prev} → {cur}",
-                    "current": cur
-                })
-        else:
-            skill_progressions = [
-                {"skill": "Redis 缓存架构", "history_path": "55 → 68 → 78", "current": 78},
-                {"skill": "Java 并发底层", "history_path": "65 → 75 → 85", "current": 85},
-                {"skill": "MySQL 索引与慢查", "history_path": "60 → 70 → 80", "current": 80}
-            ]
-
-    # Calculate real completed tasks rate
+    # 学习任务完成率：无学习计划时为 None（前端显示"暂无"），不再写死 85
     plans = db.query(LearningPlan).filter(LearningPlan.user_id == current_user.id).all()
     plan_ids = [p.id for p in plans]
-    completed_rate = 85
+    completed_rate = None
     if plan_ids:
         total_tasks = db.query(LearningTask).filter(LearningTask.plan_id.in_(plan_ids)).count()
         completed_tasks = db.query(LearningTask).filter(
@@ -468,11 +454,13 @@ def get_growth_center(period: str = "30d", current_user: User = Depends(require_
 
     return ResponseModel(data={
         "period": period,
-        "interview_count": max(len(history), 1),
-        "avg_score": round(sum(h["score"] for h in history) / len(history), 1),
+        "interview_count": len(history),
+        "avg_score": round(sum(h["score"] for h in history) / len(history), 1) if history else None,
         "score_trend": history,
         "skill_progressions": skill_progressions,
-        "completed_tasks_rate": completed_rate
+        "completed_tasks_rate": completed_rate,
+        "has_data": bool(history),
+        "include_retrain": include_retrain,
     })
 
 @router.get("/learning/plans/current", response_model=ResponseModel[dict])

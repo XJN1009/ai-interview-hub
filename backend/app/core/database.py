@@ -33,6 +33,14 @@ def ensure_schema() -> None:
         "interviews": {
             "resume_id": "INTEGER",
             "jd_text": "TEXT",
+            "purpose": "VARCHAR(30)",
+            "derived_from_id": "INTEGER",
+            "current_question_shown_at": "DATETIME",
+            "paused_at": "DATETIME",
+        },
+        "interview_answers": {
+            "overtime": "BOOLEAN",
+            "overtime_sec": "INTEGER",
         },
         "learning_tasks": {
             "stage": "VARCHAR(100)",
@@ -66,7 +74,25 @@ def ensure_schema() -> None:
                     "question_type": "PROFESSIONAL",
                     "time_limit_sec": 180,
                 },
+                "interviews": {
+                    "purpose": "NORMAL",
+                },
+                "interview_answers": {
+                    "overtime": 0,
+                    "overtime_sec": 0,
+                },
             }.get(table, {})
             for col_name, default_val in defaults.items():
                 literal = default_val if isinstance(default_val, int) else f"'{default_val}'"
                 conn.execute(text(f"UPDATE {table} SET {col_name} = {literal} WHERE {col_name} IS NULL"))
+
+        # 一次性数据清洗：语音链路从未接入，历史 answers 的 speaking_rate/filler_count
+        # 全部来自旧接口/种子的假默认值（160/2），统一归零为"未测量"语义
+        if "interview_answers" in existing_tables:
+            inspector2 = inspect(engine)
+            acols = {c["name"] for c in inspector2.get_columns("interview_answers")}
+            if {"speaking_rate", "filler_count"} <= acols:
+                conn.execute(text(
+                    "UPDATE interview_answers SET speaking_rate = 0, filler_count = 0 "
+                    "WHERE speaking_rate != 0 OR filler_count != 0"
+                ))

@@ -70,6 +70,7 @@ import AdminVerifications from '@/views/admin/Verifications.vue'
 import AdminJobReview from '@/views/admin/JobReview.vue'
 import AdminComplaints from '@/views/admin/Complaints.vue'
 import AdminContent from '@/views/admin/Content.vue'
+import AdminQuestionBank from '@/views/admin/QuestionBank.vue'
 import AdminAIService from '@/views/admin/AIService.vue'
 import AdminSecurityAudit from '@/views/admin/SecurityAudit.vue'
 
@@ -175,6 +176,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'jobs-review', redirect: '/admin/jobs/review' },
       { path: 'complaints', name: 'AdminComplaints', component: AdminComplaints, meta: { title: '举报投诉处置' } },
       { path: 'content', name: 'AdminContent', component: AdminContent, meta: { title: '门户内容运营' } },
+      { path: 'question-bank', name: 'AdminQuestionBank', component: AdminQuestionBank, meta: { title: '结构化题库管理' } },
       { path: 'ai', name: 'AdminAIService', component: AdminAIService, meta: { title: 'AI 引擎与脱敏日志' } },
       { path: 'security', name: 'AdminSecurityAudit', component: AdminSecurityAudit, meta: { title: '安全与操作审计' } },
     ]
