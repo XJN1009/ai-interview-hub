@@ -906,6 +906,7 @@ onUnmounted(() => {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transform: scaleX(-1); /* 水平翻转，消除镜像效果 */
 }
 
 .video-status-overlay {
