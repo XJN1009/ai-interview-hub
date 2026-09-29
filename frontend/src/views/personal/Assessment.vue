@@ -20,11 +20,13 @@
           <div class="radar-card zh-card">
             <h3 class="sec-title">能力模型多维雷达对照</h3>
             <RadarChart
+              v-if="radarIndicators.length"
               :indicators="radarIndicators"
               :values="radarValues"
               :compare-values="radarCompareValues"
               height="340px"
             />
+            <el-empty v-else description="暂无能力数据" :image-size="90" />
           </div>
 
           <!-- Priority Gaps Card -->
@@ -98,24 +100,9 @@ const loading = ref(true)
 const error = ref(false)
 const assessmentData = ref<any>(null)
 
-const radarIndicators = computed(() => {
-  return assessmentData.value?.radar?.indicators || [
-    { name: 'Java基础', max: 100 },
-    { name: 'Redis缓存', max: 100 },
-    { name: 'MySQL调优', max: 100 },
-    { name: '分布式微服务', max: 100 },
-    { name: '沟通表达', max: 100 },
-    { name: '工程实践', max: 100 }
-  ]
-})
-
-const radarValues = computed(() => {
-  return assessmentData.value?.radar?.current_values || [85, 76, 80, 72, 86, 74]
-})
-
-const radarCompareValues = computed(() => {
-  return assessmentData.value?.radar?.required_values || [80, 85, 80, 80, 75, 80]
-})
+const radarIndicators = computed(() => assessmentData.value?.radar?.indicators ?? [])
+const radarValues = computed(() => assessmentData.value?.radar?.current_values ?? [])
+const radarCompareValues = computed(() => assessmentData.value?.radar?.required_values ?? [])
 
 const loadAssessment = async () => {
   loading.value = true

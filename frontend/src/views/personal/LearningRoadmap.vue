@@ -4,7 +4,7 @@
       <div class="header-content">
         <div>
           <h2 class="title">AI 定向学习与技能攻坚路线</h2>
-          <p class="subtitle">针对求职目标【{{ plan?.target_job_title || 'Java后端开发工程师' }}】与岗位 JD 自动生成，分阶段推进</p>
+          <p class="subtitle">针对求职目标【{{ plan?.target_job_title || '未设置' }}】与岗位 JD 自动生成，分阶段推进</p>
         </div>
         <el-button type="primary" plain :loading="regenerating" @click="openRegenerate">
           重新生成学习规划 ⟳
@@ -13,7 +13,13 @@
     </div>
 
     <StateContainer :loading="loading" :error="error" @retry="loadPlan">
-      <div v-if="plan" class="roadmap-container">
+      <div v-if="plan && !plan.has_plan" class="empty-guide zh-card">
+        <el-empty description="还没有学习路线规划">
+          <p class="empty-tip">完成一次模拟面试或粘贴目标岗位 JD，AI 将为你生成分阶段技能攻坚任务。</p>
+          <el-button type="primary" @click="openRegenerate">立即生成学习规划</el-button>
+        </el-empty>
+      </div>
+      <div v-else-if="plan" class="roadmap-container">
         <div
           v-for="(stage, sIdx) in stages"
           :key="stage.stage"
@@ -156,8 +162,8 @@ const handleRegenerate = async () => {
     ElMessage.success('学习路线已按岗位 JD 重新生成！')
     regenerateVisible.value = false
     loadPlan()
-  } catch (e) {
-    // handled
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || '生成失败，请稍后重试')
   } finally {
     regenerating.value = false
   }
@@ -168,8 +174,8 @@ const completeTask = async (taskId: number) => {
     await personalApi.completeTask(taskId)
     ElMessage.success('任务已标记为完成，能力分已同步提升！')
     loadPlan()
-  } catch (e) {
-    // handled
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || '打卡失败')
   }
 }
 
@@ -331,5 +337,15 @@ onMounted(() => {
   color: var(--zh-text-muted);
   line-height: 1.6;
   margin-bottom: 12px;
+}
+
+.empty-guide {
+  padding: 48px 24px;
+}
+
+.empty-tip {
+  font-size: 13px;
+  color: var(--zh-text-muted);
+  margin: 0 0 16px 0;
 }
 </style>

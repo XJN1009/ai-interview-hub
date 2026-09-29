@@ -114,18 +114,21 @@ def get_personal_dashboard(current_user: User = Depends(require_auth), db: Sessi
     recent_interview = db.query(InterviewReport).filter(
         InterviewReport.user_id == current_user.id
     ).order_by(InterviewReport.id.desc()).first()
-    recent_score = recent_interview.total_score if recent_interview else 82.0
+    recent_score = recent_interview.total_score if recent_interview else None
 
     applied_count = db.query(Application).filter(Application.user_id == current_user.id).count()
     favorite_count = db.query(JobFavorite).filter(JobFavorite.user_id == current_user.id).count()
     interview_count = db.query(Interview).filter(Interview.user_id == current_user.id).count()
-    training_hours = round(interview_count * 0.5 + 4.2, 1)
+    # 按每场面试约 30 分钟折算真实训练时长
+    training_hours = round(interview_count * 0.5, 1)
 
-    # Readiness score (0-100)
+    # Readiness score (0-100)：无面试得分时不计算，返回 None 由前端显示空态
     resume = db.query(Resume).filter(Resume.user_id == current_user.id, Resume.is_deleted == False).first()
     resume_comp = resume.completeness if resume else 60
-    readiness = int(recent_score * 0.4 + resume_comp * 0.35 + 20)
-    readiness = min(98, max(50, readiness))
+    readiness = None
+    if recent_score is not None:
+        readiness = int(recent_score * 0.4 + resume_comp * 0.35 + 20)
+        readiness = min(98, max(50, readiness))
 
     # Today tasks (max 3)
     plan = db.query(LearningPlan).filter(LearningPlan.user_id == current_user.id, LearningPlan.status == "ACTIVE").first()
@@ -145,12 +148,7 @@ def get_personal_dashboard(current_user: User = Depends(require_auth), db: Sessi
                 "progress": t.progress,
                 "reason": t.reason
             })
-    if not today_tasks:
-        today_tasks = [
-            {"id": 101, "title": "完成 Redis 缓存击穿与雪崩专项演练", "competency_name": "Redis", "priority": "HIGH", "status": "TODO", "progress": 0, "reason": "高频面试必考考点"},
-            {"id": 102, "title": "参加 1 次 Java 并发编程模拟面试", "competency_name": "Java", "priority": "HIGH", "status": "TODO", "progress": 0, "reason": "检验线程池与锁机制"},
-            {"id": 103, "title": "完善简历项目亮点与量化收益", "competency_name": "综合表达", "priority": "MEDIUM", "status": "COMPLETED", "progress": 100, "reason": "提高初筛通过率"}
-        ]
+    # 今日任务：无学习计划时返回空列表，由前端引导用户生成学习路线（不再塞写死任务）
 
     # Recent applications
     recent_apps = db.query(Application).filter(Application.user_id == current_user.id).order_by(Application.id.desc()).limit(3).all()
@@ -209,18 +207,14 @@ def get_personal_dashboard(current_user: User = Depends(require_auth), db: Sessi
                 for idx, ch in enumerate(comp_hist[-5:])
             ]
         else:
-            today = datetime.now()
-            growth_chart = [
-                {"date": (today - timedelta(days=14)).strftime("%m/%d"), "score": 68.0},
-                {"date": (today - timedelta(days=7)).strftime("%m/%d"), "score": 75.0},
-                {"date": today.strftime("%m/%d"), "score": round(recent_score or 82.0, 1)}
-            ]
+            # 无任何面试/能力历史时返回空数组，前端显示空态（不再写死 68/75/82 假曲线）
+            growth_chart = []
 
     return ResponseModel(data={
         "welcome": {
             "name": profile.name if profile else "同学",
-            "target_job_title": pref.target_job_title if pref else "Java后端开发工程师",
-            "target_cities": pref.target_cities if pref else "北京,上海,深圳"
+            "target_job_title": pref.target_job_title if pref else None,
+            "target_cities": pref.target_cities if pref else None
         },
         "readiness_score": readiness,
         "readiness_description": "基于近期模拟面试得分(40%)、简历完善度(35%)及核心技术掌握情况综合计算所得。",
@@ -367,16 +361,7 @@ def get_assessment(job_id: Optional[int] = None, current_user: User = Depends(re
 @router.get("/personal/competencies", response_model=ResponseModel[List[dict]])
 def get_user_competencies(current_user: User = Depends(require_auth), db: Session = Depends(get_db)):
     comps = db.query(UserCompetency).filter(UserCompetency.user_id == current_user.id).all()
-    if not comps:
-        # Default mock items if fresh
-        default_items = [
-            {"competency_name": "Java", "score": 86.0},
-            {"competency_name": "Redis", "score": 76.0},
-            {"competency_name": "MySQL", "score": 82.0},
-            {"competency_name": "Spring Boot", "score": 85.0},
-            {"competency_name": "系统设计", "score": 74.0}
-        ]
-        return ResponseModel(data=default_items)
+    # 无能力记录时返回空列表（不再返回写死的 mock 能力分），由前端展示空态
     return ResponseModel(data=[{"competency_name": c.competency_name, "score": c.score} for c in comps])
 
 @router.get("/personal/competencies/{skillId}/evidence", response_model=ResponseModel[dict])
@@ -387,13 +372,10 @@ def get_competency_evidence(skillId: str, current_user: User = Depends(require_a
 
     return ResponseModel(data={
         "skill": skillId,
+        # 无历史记录时返回空数组（不再返回写死的假证据链），由前端展示空态
         "history": [
             {"score": h.score, "source_type": h.source_type, "date": h.created_at.strftime("%Y-%m-%d")}
             for h in history
-        ] or [
-            {"score": 70, "source_type": "简历初筛", "date": "2026-05-01"},
-            {"score": 78, "source_type": "模拟面试", "date": "2026-05-15"},
-            {"score": 84, "source_type": "深度追问", "date": "2026-05-28"}
         ]
     })
 
@@ -489,13 +471,7 @@ def get_current_learning_plan(current_user: User = Depends(require_auth), db: Se
             for t in tasks
         ]
 
-    if not tasks_out:
-        tasks_out = [
-            {"id": 1, "title": "夯实 Java 并发与 JVM 底层基础", "competency_name": "Java", "stage": "第一阶段 · 基础夯实", "priority": "HIGH", "status": "TODO", "progress": 0, "reason": "面试高频考察 JMM、锁机制与 GC 调优", "action_type": "READING"},
-            {"id": 2, "title": "精读 Redis 分布式锁与 Redisson 源码实现", "competency_name": "Redis", "stage": "第一阶段 · 基础夯实", "priority": "HIGH", "status": "COMPLETED", "progress": 100, "reason": "面试中针对缓存击穿与分布式锁细节仍有提升空间", "action_type": "INTERVIEW_PRACTICE"},
-            {"id": 3, "title": "MySQL 深入调优：慢查询日志排查与执行计划全解", "competency_name": "MySQL", "stage": "第二阶段 · 专项强化", "priority": "HIGH", "status": "TODO", "progress": 40, "reason": "岗位要求熟练掌握 B+ 树索引覆盖与聚集索引调优", "action_type": "INTERVIEW_PRACTICE"},
-            {"id": 4, "title": "分布式系统高可用设计：发号器与防重幂等设计演练", "competency_name": "系统设计", "stage": "第三阶段 · 架构进阶", "priority": "MEDIUM", "status": "TODO", "progress": 0, "reason": "强化面对架构深挖题的结构化设计与表达输出", "action_type": "PROJECT"}
-        ]
+    # 无学习计划时返回空任务列表 + has_plan=False，由前端引导用户生成（不再塞写死的 4 条假任务）
 
     # 按阶段聚合，便于前端分阶段展示待办
     stages_map: dict = {}
@@ -512,8 +488,9 @@ def get_current_learning_plan(current_user: User = Depends(require_auth), db: Se
     ]
 
     return ResponseModel(data={
-        "id": plan.id if plan else 1,
+        "id": plan.id if plan else None,
         "target_job_title": plan.target_job_title if plan else target_job_title,
+        "has_plan": bool(plan and tasks_out),
         "tasks": tasks_out,
         "stages": stages_out
     })
@@ -545,10 +522,11 @@ async def regenerate_learning_plan(data: dict = None, current_user: User = Depen
 @router.post("/learning/tasks/{id}/complete", response_model=ResponseModel[dict])
 def complete_learning_task(id: int, current_user: User = Depends(require_auth), db: Session = Depends(get_db)):
     task = db.query(LearningTask).filter(LearningTask.id == id, LearningTask.user_id == current_user.id).first()
-    if task:
-        task.status = "COMPLETED"
-        task.progress = 100
-        db.commit()
+    if not task:
+        raise HTTPException(status_code=404, detail="任务不存在或已完成")
+    task.status = "COMPLETED"
+    task.progress = 100
+    db.commit()
     return ResponseModel(data={"message": "任务标记为已完成"})
 
 @router.patch("/learning/tasks/{id}", response_model=ResponseModel[dict])
@@ -566,24 +544,25 @@ def update_learning_task(id: int, status: Optional[str] = None, progress: Option
 def get_personal_profile(current_user: User = Depends(require_auth), db: Session = Depends(get_db)):
     profile = current_user.profile
     pref = current_user.career_preference
+    # 无档案/偏好时字段返回 null（不再塞"北航/热爱高并发"等假默认值），由前端表单留空引导用户填写
     return ResponseModel(data={
         "user_id": current_user.id,
         "email": current_user.email,
         "phone": current_user.phone,
         "name": profile.name if profile else "",
-        "profile_type": profile.profile_type if profile else "STUDENT",
-        "gender": profile.gender if profile else "男",
-        "education": profile.education if profile else "本科",
-        "school": profile.school if profile else "北京航空航天大学",
-        "major": profile.major if profile else "计算机科学与技术",
-        "graduation_year": profile.graduation_year if profile else 2024,
-        "work_years": profile.work_years if profile else 0,
-        "bio": profile.bio if profile else "热爱后端底层架构与高并发调优",
-        "target_job_title": pref.target_job_title if pref else "Java后端开发工程师",
-        "target_cities": pref.target_cities if pref else "北京,上海,深圳",
-        "salary_min": pref.salary_min if pref else 15,
-        "salary_max": pref.salary_max if pref else 25,
-        "job_status": pref.job_status if pref else "LOOKING"
+        "profile_type": profile.profile_type if profile else None,
+        "gender": profile.gender if profile else None,
+        "education": profile.education if profile else None,
+        "school": profile.school if profile else None,
+        "major": profile.major if profile else None,
+        "graduation_year": profile.graduation_year if profile else None,
+        "work_years": profile.work_years if profile else None,
+        "bio": profile.bio if profile else None,
+        "target_job_title": pref.target_job_title if pref else None,
+        "target_cities": pref.target_cities if pref else None,
+        "salary_min": pref.salary_min if pref else None,
+        "salary_max": pref.salary_max if pref else None,
+        "job_status": pref.job_status if pref else None
     })
 
 @router.patch("/personal/profile", response_model=ResponseModel[dict])

@@ -48,26 +48,26 @@
           </div>
 
           <el-table :data="consents" v-loading="consentsLoading" style="width: 100%; margin-top: 16px;">
-            <el-table-column prop="purpose" label="授权用途" min-width="180">
+            <el-table-column prop="scope" label="授权用途" min-width="180">
               <template #default="{ row }">
-                <div style="font-weight: 500;">{{ row.purpose || 'AI 智能面试评测与成长分析' }}</div>
-                <div style="font-size: 12px; color: #64748B;">{{ row.scope || '处理面试录音/文本、生成综合评估报告' }}</div>
+                <div style="font-weight: 500;">{{ scopeLabel(row.scope) }}</div>
+                <div style="font-size: 12px; color: #64748B;">授权对象：{{ targetTypeLabel(row.target_type) }}</div>
               </template>
             </el-table-column>
-            <el-table-column prop="created_at" label="授权时间" width="180">
-              <template #default="{ row }">{{ formatDate(row.created_at) }}</template>
+            <el-table-column prop="granted_at" label="授权时间" width="180">
+              <template #default="{ row }">{{ formatDate(row.granted_at) }}</template>
             </el-table-column>
             <el-table-column prop="status" label="状态" width="120">
               <template #default="{ row }">
-                <el-tag :type="row.is_revoked ? 'info' : 'success'" size="small">
-                  {{ row.is_revoked ? '已撤销' : '生效中' }}
+                <el-tag :type="row.revoked ? 'info' : 'success'" size="small">
+                  {{ row.revoked ? '已撤销' : '生效中' }}
                 </el-tag>
               </template>
             </el-table-column>
             <el-table-column label="操作" width="120" align="right">
               <template #default="{ row }">
                 <el-button
-                  v-if="!row.is_revoked"
+                  v-if="!row.revoked"
                   type="danger"
                   link
                   size="small"
@@ -100,13 +100,13 @@
               </div>
               <div class="session-info">
                 <div class="session-name">
-                  {{ item.device_name || 'Chrome 浏览器 (Windows)' }}
+                  {{ item.device || '未知设备' }}
                   <el-tag v-if="item.is_current" type="primary" size="small" style="margin-left: 8px;">当前设备</el-tag>
                 </div>
                 <div class="session-meta">
-                  <span>IP: {{ item.ip_address || '127.0.0.1' }}</span>
-                  <span>登录地: {{ item.location || '局域网' }}</span>
-                  <span>最近活跃: {{ formatDate(item.last_active) }}</span>
+                  <span>IP: {{ item.ip || '-' }}</span>
+                  <span>登录地: {{ item.location || '-' }}</span>
+                  <span>最近活跃: {{ item.last_active === '刚刚' ? '刚刚' : formatDate(item.last_active) }}</span>
                 </div>
               </div>
               <div class="session-actions">
@@ -222,26 +222,32 @@ const handleUpdatePassword = async () => {
 const consentsLoading = ref(false)
 const consents = ref<any[]>([])
 
+const SCOPE_LABELS: Record<string, string> = {
+  RESUME_AND_INTERVIEW: '简历与面试数据共享',
+  RESUME: '简历数据共享',
+  INTERVIEW: '面试数据共享'
+}
+const TARGET_TYPE_LABELS: Record<string, string> = {
+  COMPANY: '企业',
+  RECRUITER: '招聘官'
+}
+const scopeLabel = (scope: string) => SCOPE_LABELS[scope] || scope || '-'
+const targetTypeLabel = (t: string) => TARGET_TYPE_LABELS[t] || t || '-'
+
 const fetchConsents = async () => {
   consentsLoading.value = true
   try {
     const res: any = await personalApi.getConsents()
-    consents.value = res || [
-      { id: 1, purpose: 'AI 简历解析与能力提炼', scope: '提取教育经历、技术关键词与工作产出', created_at: new Date().toISOString(), is_revoked: false },
-      { id: 2, purpose: 'AI 模拟面试实时语音与文字转录', scope: '生成答题诊断报告、六维胜任力雷达图', created_at: new Date().toISOString(), is_revoked: false }
-    ]
+    consents.value = Array.isArray(res) ? res : []
   } catch {
-    consents.value = [
-      { id: 1, purpose: 'AI 简历解析与能力提炼', scope: '提取教育经历、技术关键词与工作产出', created_at: new Date().toISOString(), is_revoked: false },
-      { id: 2, purpose: 'AI 模拟面试实时语音与文字转录', scope: '生成答题诊断报告、六维胜任力雷达图', created_at: new Date().toISOString(), is_revoked: false }
-    ]
+    consents.value = []
   } finally {
     consentsLoading.value = false
   }
 }
 
 const handleRevokeConsent = (row: any) => {
-  ElMessageBox.confirm(`确定撤销“${row.purpose}”的数据授权吗？撤销后相关AI功能将暂停使用。`, '撤销确认', {
+  ElMessageBox.confirm(`确定撤销对${targetTypeLabel(row.target_type)}的“${scopeLabel(row.scope)}”授权吗？撤销后相关数据将不再共享。`, '撤销确认', {
     type: 'warning',
     confirmButtonText: '确定撤销',
     cancelButtonText: '取消'
@@ -249,7 +255,7 @@ const handleRevokeConsent = (row: any) => {
     try {
       await personalApi.revokeConsent(row.id)
       ElMessage.success('授权已成功撤销')
-      row.is_revoked = true
+      row.revoked = true
     } catch (err: any) {
       ElMessage.error(err.response?.data?.detail || '撤销失败')
     }
@@ -264,13 +270,9 @@ const fetchSessions = async () => {
   sessionsLoading.value = true
   try {
     const res: any = await personalApi.getSessions()
-    sessions.value = res || [
-      { id: 'curr-1', device_name: 'Chrome on Windows 11', ip_address: '127.0.0.1', location: '本机会话', last_active: new Date().toISOString(), is_current: true }
-    ]
+    sessions.value = Array.isArray(res) ? res : []
   } catch {
-    sessions.value = [
-      { id: 'curr-1', device_name: 'Chrome on Windows 11', ip_address: '127.0.0.1', location: '本机会话', last_active: new Date().toISOString(), is_current: true }
-    ]
+    sessions.value = []
   } finally {
     sessionsLoading.value = false
   }

@@ -24,11 +24,11 @@
           </div>
           <div class="stat-card zh-card">
             <span class="lbl">当前平均面试分</span>
-            <span class="val text-blue">{{ growthData.avg_score || 82 }} 分</span>
+            <span class="val text-blue">{{ growthData.avg_score != null ? growthData.avg_score + ' 分' : '暂无' }}</span>
           </div>
           <div class="stat-card zh-card">
             <span class="lbl">学习计划任务完成率</span>
-            <span class="val text-green">{{ growthData.completed_tasks_rate || 85 }}%</span>
+            <span class="val text-green">{{ growthData.completed_tasks_rate != null ? growthData.completed_tasks_rate + '%' : '暂无' }}</span>
           </div>
         </div>
 
@@ -36,10 +36,12 @@
         <div class="chart-card zh-card">
           <h3 class="sec-title">面试技术得分长期演进趋势</h3>
           <LineChart
+            v-if="growthData.has_data"
             :x-axis-data="trendDates"
             :series-data="trendScores"
             height="260px"
           />
+          <el-empty v-else description="暂无面试记录，完成模拟面试后将在此展示得分趋势" :image-size="90" />
         </div>
 
         <!-- Skill Progression Paths (e.g., Redis 43 -> 52 -> 61 -> 76 per Spec U12) -->
@@ -47,7 +49,7 @@
           <h3 class="sec-title">核心技能分演进轨迹 (来自真实面试历史)</h3>
           <p class="sec-tip">系统根据历次对答表现实时累积能力点：</p>
 
-          <div class="progression-list">
+          <div v-if="growthData.skill_progressions?.length" class="progression-list">
             <div
               v-for="sk in growthData.skill_progressions"
               :key="sk.skill"
@@ -63,6 +65,7 @@
               </div>
             </div>
           </div>
+          <el-empty v-else description="暂无技能累积记录" :image-size="90" />
         </div>
       </div>
     </StateContainer>
@@ -80,8 +83,8 @@ const error = ref(false)
 const period = ref('30d')
 const growthData = ref<any>(null)
 
-const trendDates = computed(() => growthData.value?.score_trend?.map((i: any) => i.date) || ['第1次', '第2次', '第3次'])
-const trendScores = computed(() => growthData.value?.score_trend?.map((i: any) => i.score) || [68, 74, 82])
+const trendDates = computed(() => growthData.value?.score_trend?.map((i: any) => i.date) ?? [])
+const trendScores = computed(() => growthData.value?.score_trend?.map((i: any) => i.score) ?? [])
 
 const loadGrowth = async () => {
   loading.value = true

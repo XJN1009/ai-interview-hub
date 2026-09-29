@@ -5,10 +5,15 @@
         <!-- Welcome & Target & Today Tasks Unified Hero (Mockup 06) -->
         <div class="welcome-header zh-card">
           <div class="welcome-left">
-            <h2 class="welcome-title">你好，{{ dashboardData.welcome?.name || '张同学' }}</h2>
+            <h2 class="welcome-title">你好，{{ dashboardData.welcome?.name || '同学' }}</h2>
             <div class="target-badge-row">
               <span class="target-title-pill">
-                {{ dashboardData.welcome?.target_job_title || 'Java后端开发工程师' }} · 目标城市：{{ dashboardData.welcome?.target_cities || '长沙/深圳/上海' }}
+                <template v-if="dashboardData.welcome?.target_job_title">
+                  {{ dashboardData.welcome.target_job_title }}<template v-if="dashboardData.welcome?.target_cities"> · 目标城市：{{ dashboardData.welcome.target_cities }}</template>
+                </template>
+                <template v-else>
+                  尚未设置目标岗位，<router-link to="/personal/profile" class="target-set-link">前往个人档案设置 →</router-link>
+                </template>
               </span>
             </div>
             <div class="welcome-action-buttons">
@@ -24,7 +29,7 @@
           <!-- Readiness Circle Center -->
           <div class="readiness-center-col">
             <div class="readiness-ring-wrap">
-              <span class="ring-percent">{{ dashboardData.readiness_score || 82 }}%</span>
+              <span class="ring-percent">{{ dashboardData.readiness_score != null ? dashboardData.readiness_score + '%' : '--' }}</span>
               <span class="ring-label">当前岗位准备度</span>
             </div>
           </div>
@@ -36,6 +41,9 @@
               <router-link to="/personal/learning" class="tasks-all-link">全部路线 →</router-link>
             </div>
             <div class="tasks-mini-list">
+              <div v-if="!(dashboardData.today_tasks || []).length" class="mini-task-empty">
+                暂无训练任务，<router-link to="/personal/learning">生成学习路线 →</router-link>
+              </div>
               <div
                 v-for="(task, idx) in (dashboardData.today_tasks || []).slice(0, 2)"
                 :key="task.id"
@@ -63,9 +71,9 @@
             <div class="m-content">
               <span class="m-lbl">最近面试分</span>
               <div class="m-val-row">
-                <span class="m-val">{{ dashboardData.metrics?.recent_interview_score || 82 }}</span>
-                <span class="m-unit">分</span>
-                <span class="m-trend text-green">↑ 良好</span>
+                <span class="m-val">{{ dashboardData.metrics?.recent_interview_score ?? '--' }}</span>
+                <span v-if="dashboardData.metrics?.recent_interview_score != null" class="m-unit">分</span>
+                <span v-if="dashboardData.metrics?.recent_interview_score != null" class="m-trend text-green">↑ 良好</span>
               </div>
             </div>
           </div>
@@ -87,7 +95,7 @@
             <div class="m-content">
               <span class="m-lbl">本周训练时长</span>
               <div class="m-val-row">
-                <span class="m-val">{{ dashboardData.metrics?.training_hours || 4.2 }}</span>
+                <span class="m-val">{{ dashboardData.metrics?.training_hours ?? 0 }}</span>
                 <span class="m-unit">小时</span>
                 <span class="m-trend text-amber">保持节奏</span>
               </div>
@@ -122,6 +130,7 @@
             </div>
 
             <div class="tasks-list">
+              <el-empty v-if="!dashboardData.today_tasks?.length" description="暂无训练任务，完成面试或生成学习路线后自动规划" :image-size="80" />
               <div
                 v-for="task in dashboardData.today_tasks"
                 :key="task.id"
@@ -167,10 +176,12 @@
               </router-link>
             </div>
             <LineChart
+              v-if="growthX.length"
               :x-axis-data="growthX"
               :series-data="growthY"
               height="200px"
             />
+            <el-empty v-else description="暂无面试历史，完成首场模拟面试后生成成长轨迹" :image-size="80" />
           </div>
         </div>
 
@@ -251,8 +262,8 @@ const loading = ref(true)
 const error = ref(false)
 const dashboardData = ref<any>(null)
 
-const growthX = computed(() => dashboardData.value?.growth_chart?.map((i: any) => i.date) || ['5/1', '5/8', '5/15', '5/22', '5/29'])
-const growthY = computed(() => dashboardData.value?.growth_chart?.map((i: any) => i.score) || [68, 72, 75, 79, 82])
+const growthX = computed(() => dashboardData.value?.growth_chart?.map((i: any) => i.date) ?? [])
+const growthY = computed(() => dashboardData.value?.growth_chart?.map((i: any) => i.score) ?? [])
 
 const loadDashboard = async () => {
   loading.value = true
@@ -272,8 +283,8 @@ const handleCompleteTask = async (taskId: number) => {
     await personalApi.completeTask(taskId)
     ElMessage.success('任务已标记为完成！准备度提升')
     loadDashboard()
-  } catch (e) {
-    // handled
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || '任务打卡失败')
   }
 }
 

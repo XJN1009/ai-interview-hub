@@ -130,8 +130,8 @@ const handleSave = async () => {
     // 同步刷新登录用户缓存，保证顶部导航与工作台左侧的目标岗位/姓名即时对齐
     await authStore.fetchCurrentUser()
     ElMessage.success('个人资料与求职偏好已成功更新！')
-  } catch (e) {
-    // handled
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || '保存失败，请稍后重试')
   } finally {
     saving.value = false
   }
