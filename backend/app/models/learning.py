@@ -29,6 +29,9 @@ class LearningTask(Base):
     progress = Column(Integer, default=0, nullable=False)         # 0-100%
     reason = Column(String(255), nullable=True)
     action_type = Column(String(50), default="INTERVIEW_PRACTICE", nullable=False)
+    deliverable = Column(String(255), nullable=True)          # 产出物：任务完成的验收标准
+    resources_json = Column(Text, nullable=True)              # 推荐学习资源列表（JSON 数组）
+    estimated_weeks = Column(Integer, nullable=True)          # 建议周期（周），0 表示持续进行
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     plan = relationship("LearningPlan", back_populates="tasks")

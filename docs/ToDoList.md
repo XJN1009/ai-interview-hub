@@ -36,6 +36,9 @@
 6. 模拟面试：
 7. 成长中心：
 8. 学习路线：
+   - ~~打卡提示"能力分已同步提升"但后端未更新 UserCompetency（文案与实现不符）~~ ✅ 已完成（2026-09-30：complete 端点真实发放能力分 +2 并写 PRACTICE 历史，重复打卡幂等）
+   - ~~progress 字段无前端更新入口，只能"标记完成"置 100（PATCH 端点未接入）~~ ✅ 已完成（2026-09-30：前端补 updateTaskProgress + 进度滑块，100% 视同完成并发放能力分）
+   - ~~COURSE/READING/PROJECT 仅是标签，无课程内容/外链/学习资源，任务不可执行~~ ✅ 已完成（2026-09-30：新增 5 个 AI 岗位模板库，任务带产出物+推荐资源+建议周期；未命中模板时 LLM 生成同样强制输出这三字段）
 9. 消息中心：
    - 标题栏的“消息中心”跳转按钮当前为常态红点标记，后需更改为正常图标
 10. 个人档案：
@@ -183,6 +186,13 @@ Navbar.vue —`<el-badge is-dot>` 无条件显示红点。改为按未读数控�
 - `regenerate_learning_plan` 改为按用户目标岗位 / 传入 JD 生成，并参考最近一次面试薄弱项；`generate_learning_plan` 接入真实 LLM。
 - `LearningTask` 新增 `stage` 字段（含迁移）；`get_current_learning_plan` 返回 `stages` 分阶段聚合。
 - `LearningRoadmap.vue` 改为**按阶段分组展示待办**，并新增「依据 JD 生成」弹窗。
+
+## 学习路线增强（2026-09-30）✅
+
+- **模板库混合架构**：新增 `app/data/learning_path_templates.py`（5 个 AI 岗位，源自 `docs/references/AI岗位学习路线与规划.md`），任务带产出物/推荐资源/建议周期；命中模板用骨架 + 薄弱项个性化，未命中回退 LLM（prompt 已要求同结构输出）。`LearningTask` 新增 `deliverable`/`resources_json`/`estimated_weeks` 字段（ensure_schema 迁移）。
+- **能力分闭环**：打卡/进度到 100% 均真实发放 `UserCompetency` +2 并写 `CompetencyHistory`（PRACTICE），重复完成幂等；前端文案如实显示实际加分。
+- **进度可记录**：前端接入 PATCH `updateTaskProgress` + 进度滑块，中间进度不再只能 0/100；新增 IN_PROGRESS「攻坚中」状态。
+- 详见 [update_log.md](./update_log.md) 2026-09-30 条目。
 
 ## 优化 1 / 10 · 工作台目标岗位与用户名对齐 ✅
 

@@ -44,6 +44,9 @@ def ensure_schema() -> None:
         },
         "learning_tasks": {
             "stage": "VARCHAR(100)",
+            "deliverable": "VARCHAR(255)",
+            "resources_json": "TEXT",
+            "estimated_weeks": "INTEGER",
         },
         "interview_plans": {
             "paper_json": "TEXT",

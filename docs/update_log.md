@@ -1,5 +1,27 @@
 # 更新日志
 
+## 2026-09-30
+- 面试间摄像头镜像修复：`InterviewSession.vue` 预览视频加 `transform: scaleX(-1)` 水平翻转，消除前置摄像头镜面显示（仅视觉翻转，不影响采集流）
+- **个人中心假数据全面清理**（前端 5 页 + 后端 5 接口，原则：无数据即空态，禁止写死兜底伪装繁荣）：
+  - **Settings.vue 字段错位 bug + 假记录**：授权表改读后端真实字段（`scope/target_type/granted_at/revoked`，原读 `purpose/created_at/is_revoked` 导致真数据永远显示成写死文案且撤销状态恒为"生效中"）；会话表改读 `device/ip`；删除失败时注入的假授权/假会话记录；新增 scope/target_type 中文映射
+  - **GrowthCenter.vue 假兜底回滚**：删除前端复活的 `82 分/85%/68-74-82 假趋势`（后端 9-28 已删，前端 `||` 兜底又加了回来）；null 显示"暂无"，趋势图与技能轨迹空态用 `el-empty`
+  - **Dashboard.vue + `/personal/dashboard`**：后端无面试时 `recent_score` 返回 null（原写死 82）、训练时长去掉 `+4.2` 伪基数、准备度无分不计算、删除写死的 3 条今日任务（id 101-103，打卡必 404）与 68/75/82 假成长曲线、welcome 假默认岗位改 null；前端删除"张同学/82/4.2/5-1 周假曲线"兜底，空态显示引导链接（设置目标岗位/生成学习路线/完成首场面试）
+  - **Assessment.vue**：删除雷达图三组写死数组（Java基础/Redis…六维与两组分值），改为直读后端真实 `radar`，空数据 `el-empty`
+  - **`/personal/competencies` 与 `/{skillId}/evidence`**：删除无数据时的 5 条 mock 能力分与 3 条假证据链，返回空列表（确认无前端调用方依赖）
+  - **`/learning/plans/current` + LearningRoadmap.vue**：删除无计划时写死的 4 条假任务（含假 progress 40/100），新增 `has_plan` 标记；前端空态引导一键生成学习规划，副标题假默认岗位改"未设置"
+  - **`/personal/profile` + Profile.vue**：删除无档案时的假默认值（北京航空航天大学/计算机科学与技术/2024/热爱高并发/15-25K 等），字段返回 null，表单留空引导真实填写
+  - **打卡接口诚实化**：`POST /learning/tasks/{id}/complete` 任务不存在时返回 404（原静默成功），前端各页不再吞错，失败显示真实报错
+  - 验证：`vue-tsc` 类型检查通过；后端语法检查通过
+- 学习路线混合架构改造（参照 `docs/references/AI岗位学习路线与规划.md` 的课程表形式）：
+  - 新增岗位模板库 `backend/app/data/learning_path_templates.py`：从参考文档提炼 5 个 AI 岗位（智能内控 / AI Native 创新小组 / 滴滴 / AI 应用工程师 / Agent 开发工程师）的分阶段路线，每个任务含**产出物（deliverable）、推荐资源（resources）、建议周期（estimated_weeks）**；`match_keywords` 按特化优先排序避免误匹配
+  - 数据模型：`LearningTask` 新增上述 3 字段（`ensure_schema` 增量迁移）；`/learning/plans/current` 返回新字段与阶段周期
+  - 生成逻辑（`personal.py::generate_and_store_learning_plan`）：命中模板 → 模板骨架 + 面试薄弱项确定性个性化（命中任务升 HIGH 并改写依据）；未命中 → 回退 LLM 动态生成，prompt 已强制要求输出产出物/资源/周期字段
+  - 前端 `LearningRoadmap.vue`：阶段标题显示"建议 N 周"，任务卡新增"产出物 + 推荐资源标签"区块
+- 学习路线两项存量缺口修复：
+  - **能力分文案不符**：`POST /learning/tasks/{id}/complete` 真实实现能力分联动——按任务 `competency_name` 给 `UserCompetency` +2（上限 100）并写入 `CompetencyHistory`（source=PRACTICE，成长中心技能进步曲线自动消费）；重复打卡幂等不重复加分；前端文案改为如实反馈实际加分
+  - **PATCH 进度未接入**：前端 `api/index.ts` 补 `updateTaskProgress` 封装；任务卡进度条新增"调整进度"滑块，中间进度（0-100）可记录；后端 PATCH 补齐语义——越界钳制、滑到 100% 视同完成并发放能力分加成（与"标记已学完"一致）、>0 自动转 IN_PROGRESS；新增"攻坚中"状态标签
+  - 验证：端到端断言通过（模板命中/误匹配防护、薄弱项提升 HIGH、打卡加分与幂等、PATCH 40%→IN_PROGRESS、100%→COMPLETED+加分、越界钳制）；`vue-tsc` 类型检查通过；顺带以模板路线填充了 learning_plans/learning_tasks 演示数据（此前为 0 行）
+
 ## 2026-09-29
 - 语音链路治理（B 类第 7 项）浏览器实测收尾：设备检测卡显示真实文案（摄像头/麦克风数量、TTS 能力、后端往返实测毫秒），"语音口述/停止口述""重听题目/停止朗读"状态切换正常，键盘答题主流程无回归，无 Vue 报错——该条目至此完整交付
 - 项目范围决策（更新《功能完善与实现建议》第五章）：明确本项目定位为竞赛作品/校内演示，砍掉与威胁模型不匹配的企业级能力——登录验证码、接口限流、Redis 缓存、AI 异步任务队列（Celery）、病毒扫描、邮箱/手机验证、Prometheus 监控告警，标注为"范围外（明确不做，非遗漏）"并记录现状兜底（mock 回退、dev_reset_token、扩展名+大小校验等）；保留低成本高价值项：企业/管理端统计真实化、候选人匹配度排行榜、AICallLog 可观测、/health、MIME 魔数校验与上传配置化、SECRET_KEY/CORS 收尾、pytest 改造，统一并入缩减后的第 3 批；原第 4 批取消独立存在

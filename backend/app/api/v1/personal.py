@@ -18,6 +18,7 @@ from app.models.learning import LearningPlan, LearningTask
 from app.models.system import Notification, NotificationPreference, ConsentRecord, UserSession
 from app.schemas.common import ResponseModel
 from app.ai.provider import ai_provider
+from app.data.learning_path_templates import match_role_template
 
 router = APIRouter(tags=["个人求职与成长中心"])
 
@@ -75,6 +76,34 @@ def get_or_create_active_plan(db: Session, user: User, target_job_title: str) ->
     return plan
 
 
+def _tasks_from_template(template: dict, gaps: Optional[List[str]] = None) -> List[dict]:
+    """模板骨架 + 基于面试薄弱项的确定性个性化：命中薄弱项的任务提升为 HIGH 并改写依据。"""
+    gap_set = [g.lower() for g in (gaps or []) if g]
+    tasks = []
+    for stage in template["stages"]:
+        for t in stage["tasks"]:
+            priority = t.get("priority", "MEDIUM")
+            reason = t.get("reason", "")
+            competency = (t.get("competency_name") or "").lower()
+            title = (t.get("title") or "").lower()
+            hit_gap = next((g for g in gap_set if g and (g in competency or g in title or competency in g)), None)
+            if hit_gap:
+                priority = "HIGH"
+                reason = f"最近面试薄弱项「{hit_gap}」相关，优先攻坚；{reason}"
+            tasks.append({
+                "title": t["title"],
+                "competency_name": t.get("competency_name", "综合能力"),
+                "stage": stage["stage"],
+                "priority": priority,
+                "reason": reason,
+                "action_type": t.get("action_type", "COURSE"),
+                "deliverable": t.get("deliverable"),
+                "resources": t.get("resources") or [],
+                "estimated_weeks": t.get("estimated_weeks", stage.get("estimated_weeks")),
+            })
+    return tasks
+
+
 async def generate_and_store_learning_plan(
     db: Session,
     user: User,
@@ -83,13 +112,19 @@ async def generate_and_store_learning_plan(
     gaps: Optional[List[str]] = None,
     replace: bool = False
 ) -> LearningPlan:
-    """调用 AI 生成学习任务并按阶段落库，供学习路线页分阶段展示。"""
+    """生成学习任务并按阶段落库：命中岗位模板库则用模板骨架（含产出物/资源/周期），
+    否则回退 AI 动态生成，供学习路线页分阶段展示。"""
     plan = get_or_create_active_plan(db, user, target_job_title)
     if replace:
         db.query(LearningTask).filter(LearningTask.plan_id == plan.id).delete()
         db.commit()
 
-    tasks = await ai_provider.generate_learning_plan(target_job_title, gaps=gaps, jd_text=jd_text)
+    template = match_role_template(target_job_title, jd_text)
+    if template:
+        tasks = _tasks_from_template(template, gaps=gaps)
+    else:
+        tasks = await ai_provider.generate_learning_plan(target_job_title, gaps=gaps, jd_text=jd_text)
+
     for idx, t in enumerate(tasks):
         db.add(LearningTask(
             plan_id=plan.id,
@@ -99,7 +134,10 @@ async def generate_and_store_learning_plan(
             stage=t.get("stage") or f"第{idx + 1}阶段 · 专项提升",
             priority=t.get("priority", "HIGH"),
             reason=t.get("reason", "针对目标岗位 JD 与薄弱项量身定制"),
-            action_type=t.get("action_type", "INTERVIEW_PRACTICE")
+            action_type=t.get("action_type", "INTERVIEW_PRACTICE"),
+            deliverable=t.get("deliverable"),
+            resources_json=json.dumps(t.get("resources") or [], ensure_ascii=False),
+            estimated_weeks=t.get("estimated_weeks"),
         ))
     db.commit()
     db.refresh(plan)
@@ -466,7 +504,10 @@ def get_current_learning_plan(current_user: User = Depends(require_auth), db: Se
                 "status": t.status,
                 "progress": t.progress,
                 "reason": t.reason,
-                "action_type": t.action_type
+                "action_type": t.action_type,
+                "deliverable": t.deliverable,
+                "resources": json.loads(t.resources_json) if t.resources_json else [],
+                "estimated_weeks": t.estimated_weeks
             }
             for t in tasks
         ]
@@ -482,7 +523,8 @@ def get_current_learning_plan(current_user: User = Depends(require_auth), db: Se
             "stage": stage,
             "tasks": stage_tasks,
             "total": len(stage_tasks),
-            "completed": sum(1 for x in stage_tasks if x["status"] == "COMPLETED")
+            "completed": sum(1 for x in stage_tasks if x["status"] == "COMPLETED"),
+            "estimated_weeks": max((x["estimated_weeks"] or 0) for x in stage_tasks) if stage_tasks else 0
         }
         for stage, stage_tasks in stages_map.items()
     ]
@@ -519,26 +561,62 @@ async def regenerate_learning_plan(data: dict = None, current_user: User = Depen
     )
     return ResponseModel(data={"message": "学习路线与任务已重新生成", "target_job_title": target_job_title})
 
+def _award_competency(db: Session, user: User, task: LearningTask) -> float:
+    """任务完成时按关联能力项 +2（上限 100）并写入成长历史，返回实际加分。"""
+    u_comp = db.query(UserCompetency).filter(
+        UserCompetency.user_id == user.id,
+        UserCompetency.competency_name == task.competency_name
+    ).first()
+    if u_comp:
+        delta = min(2.0, 100.0 - u_comp.score)
+        new_score = round(u_comp.score + delta, 1)
+        u_comp.score = new_score
+    else:
+        delta = 2.0
+        new_score = 62.0
+        db.add(UserCompetency(user_id=user.id, competency_name=task.competency_name, score=new_score))
+    if delta > 0:
+        db.add(CompetencyHistory(
+            user_id=user.id,
+            competency_name=task.competency_name,
+            score=new_score,
+            source_type="PRACTICE",
+            source_id=task.id
+        ))
+    return delta
+
 @router.post("/learning/tasks/{id}/complete", response_model=ResponseModel[dict])
 def complete_learning_task(id: int, current_user: User = Depends(require_auth), db: Session = Depends(get_db)):
     task = db.query(LearningTask).filter(LearningTask.id == id, LearningTask.user_id == current_user.id).first()
     if not task:
         raise HTTPException(status_code=404, detail="任务不存在或已完成")
+    already_completed = task.status == "COMPLETED"
     task.status = "COMPLETED"
     task.progress = 100
+    # 重复打卡不重复加分
+    delta = 0.0 if already_completed else _award_competency(db, current_user, task)
     db.commit()
-    return ResponseModel(data={"message": "任务标记为已完成"})
+    return ResponseModel(data={"message": "任务标记为已完成", "competency_delta": delta})
 
 @router.patch("/learning/tasks/{id}", response_model=ResponseModel[dict])
 def update_learning_task(id: int, status: Optional[str] = None, progress: Optional[int] = None, current_user: User = Depends(require_auth), db: Session = Depends(get_db)):
     task = db.query(LearningTask).filter(LearningTask.id == id, LearningTask.user_id == current_user.id).first()
+    delta = 0.0
     if task:
+        was_completed = task.status == "COMPLETED"
         if status:
             task.status = status
         if progress is not None:
-            task.progress = progress
+            task.progress = max(0, min(100, progress))
+            if task.progress == 100:
+                task.status = "COMPLETED"
+            elif task.progress > 0 and task.status == "TODO":
+                task.status = "IN_PROGRESS"
+        # 进度滑到 100% 视同完成，与"标记已学完"一致地发放能力分加成
+        if not was_completed and task.status == "COMPLETED":
+            delta = _award_competency(db, current_user, task)
         db.commit()
-    return ResponseModel(data={"message": "更新成功"})
+    return ResponseModel(data={"message": "更新成功", "competency_delta": delta})
 
 @router.get("/personal/profile", response_model=ResponseModel[dict])
 def get_personal_profile(current_user: User = Depends(require_auth), db: Session = Depends(get_db)):

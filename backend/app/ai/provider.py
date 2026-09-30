@@ -218,9 +218,12 @@ class AIProvider:
             f"=== Job Description (JD) ===\n{(jd_text or 'N/A')[:2000]}\n\n"
             f"Known weak points / gaps: {', '.join(gaps) if gaps else 'N/A'}\n\n"
             f"Generate exactly {count} learning tasks ordered by stage.\n"
+            "Each task must be actionable: include a concrete deliverable (产出物/验收标准), "
+            "recommended learning resources (书籍/官方文档/课程名), and an estimated duration in weeks.\n"
             "Output JSON: {\"tasks\": [{\"title\": str(中文), \"competency_name\": str, "
             "\"priority\": \"HIGH|MEDIUM|LOW\", \"reason\": str(中文), "
-            "\"action_type\": \"INTERVIEW_PRACTICE|COURSE|READING|PROJECT\", \"stage\": str(中文阶段名)}]}"
+            "\"action_type\": \"INTERVIEW_PRACTICE|COURSE|READING|PROJECT\", \"stage\": str(中文阶段名), "
+            "\"deliverable\": str(中文产出物), \"resources\": [str(推荐资源)], \"estimated_weeks\": int}]}"
         )
         real_res = await self._call_llm_json(prompt, LearningPlanSchema)
         if real_res and real_res.get("tasks"):

@@ -30,6 +30,7 @@
             <div class="stage-title-row">
               <span class="stage-index">阶段 {{ Number(sIdx) + 1 }}</span>
               <h3 class="stage-name">{{ stage.stage }}</h3>
+              <span v-if="stage.estimated_weeks" class="stage-weeks">建议 {{ stage.estimated_weeks }} 周</span>
             </div>
             <span class="stage-progress">{{ stage.completed }} / {{ stage.total }} 已完成</span>
           </div>
@@ -50,16 +51,43 @@
                 </div>
 
                 <span v-if="task.status === 'COMPLETED'" class="status-tag text-green">✓ 已掌握完成</span>
+                <span v-else-if="task.progress > 0" class="status-tag text-blue">攻坚中</span>
                 <span v-else class="status-tag text-amber">待攻克</span>
               </div>
 
               <h4 class="task-title">{{ task.title }}</h4>
               <p class="task-reason">制定依据：{{ task.reason }}</p>
 
+              <div v-if="task.deliverable || (task.resources && task.resources.length)" class="task-detail">
+                <p v-if="task.deliverable" class="task-deliverable">
+                  <span class="detail-label">产出物</span>{{ task.deliverable }}
+                  <span v-if="task.estimated_weeks" class="task-weeks">建议 {{ task.estimated_weeks }} 周</span>
+                </p>
+                <p v-if="task.resources && task.resources.length" class="task-resources">
+                  <span class="detail-label">推荐资源</span>
+                  <el-tag v-for="r in task.resources" :key="r" size="small" class="resource-tag">{{ r }}</el-tag>
+                </p>
+              </div>
+
               <div class="task-foot">
                 <div class="progress-box">
                   <span class="prog-lbl">攻坚进度</span>
                   <el-progress :percentage="task.progress" :stroke-width="6" style="width: 140px;" />
+                  <el-popover
+                    v-if="task.status !== 'COMPLETED'"
+                    trigger="click"
+                    :width="240"
+                    placement="top"
+                    @show="progressDraft = task.progress"
+                  >
+                    <template #reference>
+                      <el-button size="small" link type="primary">调整进度</el-button>
+                    </template>
+                    <div class="progress-popover">
+                      <el-slider v-model="progressDraft" :step="10" :format-tooltip="(v: number) => v + '%'" />
+                      <el-button size="small" type="primary" @click="saveProgress(task)">保存进度</el-button>
+                    </div>
+                  </el-popover>
                 </div>
 
                 <div class="task-actions">
@@ -70,7 +98,7 @@
                     v-if="task.status !== 'COMPLETED'"
                     size="small"
                     type="success"
-                    @click="completeTask(task.id)"
+                    @click="completeTask(task)"
                   >
                     标记已学完
                   </el-button>
@@ -113,6 +141,7 @@ const loading = ref(true)
 const error = ref(false)
 const regenerating = ref(false)
 const plan = ref<any>(null)
+const progressDraft = ref(0)
 
 const regenerateVisible = ref(false)
 const jdInput = ref('')
@@ -134,7 +163,8 @@ const stages = computed(() => {
     stage,
     tasks,
     total: tasks.length,
-    completed: tasks.filter(x => x.status === 'COMPLETED').length
+    completed: tasks.filter(x => x.status === 'COMPLETED').length,
+    estimated_weeks: tasks.length ? Math.max(...tasks.map(t => t.estimated_weeks || 0)) : 0
   }))
 })
 
@@ -169,10 +199,26 @@ const handleRegenerate = async () => {
   }
 }
 
-const completeTask = async (taskId: number) => {
+const saveProgress = async (task: any) => {
   try {
-    await personalApi.completeTask(taskId)
-    ElMessage.success('任务已标记为完成，能力分已同步提升！')
+    const res: any = await personalApi.updateTaskProgress(task.id, progressDraft.value)
+    const delta = res?.competency_delta
+    if (progressDraft.value === 100) {
+      ElMessage.success(delta > 0 ? `进度已达 100%，任务完成，「${task.competency_name}」能力分 +${delta}` : '进度已达 100%，任务自动完成！')
+    } else {
+      ElMessage.success(`攻坚进度已更新至 ${progressDraft.value}%`)
+    }
+    loadPlan()
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || '进度更新失败')
+  }
+}
+
+const completeTask = async (task: any) => {
+  try {
+    const res: any = await personalApi.completeTask(task.id)
+    const delta = res?.competency_delta
+    ElMessage.success(delta > 0 ? `任务已完成，「${task.competency_name}」能力分 +${delta}` : '任务已标记为完成')
     loadPlan()
   } catch (err: any) {
     ElMessage.error(err.response?.data?.detail || '打卡失败')
@@ -253,6 +299,50 @@ onMounted(() => {
   color: var(--zh-text-title);
 }
 
+.stage-weeks {
+  font-size: 12px;
+  color: #64748B;
+  background: #F1F5F9;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+
+.task-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.task-deliverable,
+.task-resources {
+  font-size: 13px;
+  color: var(--zh-text-body, #334155);
+  line-height: 1.8;
+  margin: 0;
+}
+
+.detail-label {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 700;
+  color: #2563EB;
+  background: #EFF6FF;
+  padding: 1px 8px;
+  border-radius: 4px;
+  margin-right: 8px;
+}
+
+.task-weeks {
+  font-size: 12px;
+  color: #64748B;
+  margin-left: 10px;
+}
+
+.resource-tag {
+  margin-right: 6px;
+}
+
 .stage-progress {
   font-size: 12px;
   color: var(--zh-text-muted);
@@ -293,6 +383,14 @@ onMounted(() => {
 }
 .text-green { color: #10B981; }
 .text-amber { color: #D97706; }
+.text-blue { color: #2563EB; }
+
+.progress-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px;
+}
 
 .task-title {
   font-size: 16px;

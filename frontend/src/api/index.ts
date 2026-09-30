@@ -58,6 +58,7 @@ export const personalApi = {
   getLearningPlan: () => client.get('/learning/plans/current'),
   regenerateLearningPlan: (data?: any) => client.post('/learning/plans/generate', data || {}),
   completeTask: (id: number) => client.post(`/learning/tasks/${id}/complete`),
+  updateTaskProgress: (id: number, progress: number) => client.patch(`/learning/tasks/${id}`, null, { params: { progress } }),
   getProfile: () => client.get('/personal/profile'),
   updateProfile: (data: any) => client.patch('/personal/profile', data),
   getNotifications: () => client.get('/notifications'),
