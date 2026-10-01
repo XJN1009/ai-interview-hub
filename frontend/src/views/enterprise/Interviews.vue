@@ -135,7 +135,7 @@
           />
         </el-form-item>
         <el-form-item label="会议地点/说明">
-          <el-input v-model="inviteForm.location" placeholder="如：智面舱协同会议室 / 腾讯会议" />
+          <el-input v-model="inviteForm.location" placeholder="如：经纬职引-智面仓协同会议室 / 腾讯会议" />
         </el-form-item>
         <el-form-item label="附言">
           <el-input v-model="inviteForm.note" type="textarea" :rows="2" placeholder="请提前测试麦克风与摄像头..." />
@@ -195,7 +195,7 @@ const inviteForm = reactive({
   application_id: undefined as number | undefined,
   session_type: 'ENTERPRISE_RECRUITMENT',
   scheduled_at: new Date(Date.now() + 86400000),
-  location: '智面舱实时视频协同会议室',
+  location: '经纬职引-智面仓实时视频协同会议室',
   note: '请准时出席面试'
 })
 

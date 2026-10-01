@@ -5,7 +5,7 @@
         <div class="brand-logo-icon">
           <el-icon :size="24" color="#FFFFFF"><Monitor /></el-icon>
         </div>
-        <span class="brand-name">智面舱</span>
+        <span class="brand-name">经纬职引-智面仓</span>
       </div>
 
       <div class="select-header">

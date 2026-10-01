@@ -52,7 +52,7 @@
                 </div>
               </div>
               <div class="ai-meta-info">
-                <span class="ai-chief-title">智面舱 AI 首席面试官</span>
+                <span class="ai-chief-title">经纬职引-智面仓 AI 首席面试官</span>
                 <span class="ai-status-indicator">
                   <span class="status-dot-blink"></span>
                   正在提问与倾听作答

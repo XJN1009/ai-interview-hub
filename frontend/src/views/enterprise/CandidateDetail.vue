@@ -256,7 +256,7 @@
           />
         </el-form-item>
         <el-form-item label="面试地点 / 会议链接">
-          <el-input v-model="inviteForm.location" placeholder="例如：腾讯会议 ID 123-456-789 或 智面舱在线协同室" />
+          <el-input v-model="inviteForm.location" placeholder="例如：腾讯会议 ID 123-456-789 或 经纬职引-智面仓在线协同室" />
         </el-form-item>
         <el-form-item label="给候选人的附言通知">
           <el-input v-model="inviteForm.note" type="textarea" :rows="3" placeholder="附言说明..." />
@@ -355,7 +355,7 @@ const inviting = ref(false)
 const inviteForm = reactive({
   session_type: 'ENTERPRISE_RECRUITMENT',
   scheduled_at: new Date(Date.now() + 86400000 * 2),
-  location: '智面舱实时视频协同会议室',
+  location: '经纬职引-智面仓实时视频协同会议室',
   note: '请准时出席本次线上面试。'
 })
 

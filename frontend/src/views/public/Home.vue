@@ -57,7 +57,7 @@
                 <el-icon :size="20" color="#2563EB"><Cpu /></el-icon>
               </div>
               <div class="ai-meta">
-                <span class="ai-name">智面舱 AI 首席面试官</span>
+                <span class="ai-name">经纬职引-智面仓 AI 首席面试官</span>
                 <span class="ai-status">● 实时双向音视频交互中</span>
               </div>
             </div>

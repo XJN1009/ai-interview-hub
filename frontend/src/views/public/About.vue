@@ -1,7 +1,7 @@
 <template>
   <div class="about-page zh-page-container">
     <div class="about-card zh-card">
-      <h1 class="title">关于智面舱 (AI Interview Hub)</h1>
+      <h1 class="title">关于经纬职引-智面仓 (AI Interview Hub)</h1>
       <p class="subtitle">设计依据：企业命题 05《智能面试仓的开发与应用》全栈开发规格书 V3.0</p>
       <div class="divider"></div>
 
@@ -11,7 +11,7 @@
           在传统求职与招聘过程中，求职者往往面临“缺乏高质量实战面试演练”、“无法量化自身技术差距”、“难以获得专业即时反馈”等痛点；而企业招聘方则承受着“简历海选成本高”、“面试评价标准不一”、“部门协同流程冗长”等挑战。
         </p>
         <p>
-          智面舱 (AI Interview Hub) 旨在通过大模型与智能音视频交互技术，打破传统面试的黑箱与壁垒，构建“个人训练—岗位投递—企业筛选—面试协作—成长提升”的双向业务闭环。
+          经纬职引-智面仓 (AI Interview Hub) 旨在通过大模型与智能音视频交互技术，打破传统面试的黑箱与壁垒，构建“个人训练—岗位投递—企业筛选—面试协作—成长提升”的双向业务闭环。
         </p>
       </div>
 

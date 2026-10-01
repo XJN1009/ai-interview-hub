@@ -4,7 +4,7 @@
     <header class="admin-header">
       <div class="header-brand">
         <el-icon :size="22" color="#EF4444"><Cpu /></el-icon>
-        <span class="brand-title">智面舱 · 平台独立治理与运营后台</span>
+        <span class="brand-title">经纬职引-智面仓 · 平台独立治理与运营后台</span>
       </div>
       <div class="header-right">
         <span class="admin-badge">系统管理员</span>

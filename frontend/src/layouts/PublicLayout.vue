@@ -8,7 +8,7 @@
       <div class="footer-container">
         <div class="footer-info">
           <div class="footer-logo">
-            <span class="logo-title">智面舱 AI Interview Hub</span>
+            <span class="logo-title">经纬职引-智面仓 AI Interview Hub</span>
             <span class="logo-tag">全栈智能面试与招聘协作平台</span>
           </div>
           <p class="footer-desc">面向个人职业成长与企业人才筛选的双向闭环系统。基于能力雷达、动态追问与真实人岗匹配，赋能每一次面试与招聘抉择。</p>
@@ -29,14 +29,14 @@
           </div>
           <div class="link-group">
             <h4>支持与合规</h4>
-            <router-link to="/about">关于智面舱</router-link>
+            <router-link to="/about">关于经纬职引-智面仓</router-link>
             <router-link to="/help">帮助中心</router-link>
             <a href="javascript:void(0);">隐私政策与授权</a>
           </div>
         </div>
       </div>
       <div class="footer-bottom">
-        <p>© 2026 智面舱 (AI Interview Hub) V3.0 版权所有 · 基于《智能面试仓的开发与应用》命题全栈开发</p>
+        <p>© 2026 经纬职引-智面仓 (AI Interview Hub) V3.0 版权所有 · 基于《智能面试仓的开发与应用》命题全栈开发</p>
       </div>
     </footer>
   </div>

@@ -5,7 +5,7 @@
         <div class="admin-icon">
           <el-icon :size="32" color="#EF4444"><Cpu /></el-icon>
         </div>
-        <h2 class="title">智面舱 · 平台独立治理后台</h2>
+        <h2 class="title">经纬职引-智面仓 · 平台独立治理后台</h2>
         <p class="subtitle">仅限平台管理员与超管登入，所有操作均计入全局审计日志</p>
       </div>
 

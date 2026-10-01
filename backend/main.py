@@ -21,7 +21,7 @@ ensure_schema()
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
-    description="智面舱 AI Interview Hub 全栈后端 API 系统",
+    description="经纬职引-智面仓 AI Interview Hub 全栈后端 API 系统",
     version="3.0.0"
 )
 

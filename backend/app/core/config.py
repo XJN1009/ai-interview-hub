@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "智面舱 AI Interview Hub"
+    PROJECT_NAME: str = "经纬职引-智面仓 AI Interview Hub"
     API_V1_STR: str = "/api/v1"
     # Safe only for local development; production/Docker must override this via .env.
     SECRET_KEY: str = "development-only-change-me"

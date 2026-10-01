@@ -28,7 +28,7 @@ from app.models.system import Notification, OperationLog
 
 def seed(reset=True):
     print("=================================================================")
-    print("智面舱 AI Interview Hub V2 - 高保真业务仿真数据初始化")
+    print("经纬职引-智面仓 AI Interview Hub V2 - 高保真业务仿真数据初始化")
     print("=================================================================")
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
@@ -943,7 +943,7 @@ def seed(reset=True):
         ("ENTERPRISE", "腾讯科技向您投递的岗位发送了状态通知", "您投递的【Java后端实习生】职位已完成 AI 初筛评估，成绩表现良好。", "/personal/applications", datetime.utcnow() - timedelta(days=2)),
         ("SYSTEM", "账号安全登录提醒", "您的账号于今日 09:30 在 Windows Chrome 成功登录，如非本人操作请及时修改密码。", "/personal/settings", datetime.utcnow() - timedelta(days=2)),
         ("APPLICATION_PROGRESS", "岗位投递成功确认", "您已成功向字节跳动投递了【测试开发工程师】职位，简历已安全同步至企业招聘系统。", "/personal/applications", datetime.utcnow() - timedelta(days=3)),
-        ("SYSTEM", "欢迎加入智面舱 AI Interview Hub", "恭喜开启您的智能求职与职业成长之旅！完善简历即可开启全真模拟面试与人岗精准匹配。", "/personal/profile", datetime.utcnow() - timedelta(days=10))
+        ("SYSTEM", "欢迎加入经纬职引-智面仓 AI Interview Hub", "恭喜开启您的智能求职与职业成长之旅！完善简历即可开启全真模拟面试与人岗精准匹配。", "/personal/profile", datetime.utcnow() - timedelta(days=10))
     ]
 
     for ntype, title, content, link, read_at in notifications_data:
@@ -968,7 +968,7 @@ def seed(reset=True):
     print(f"    题库就绪：新增 {qb_stat['inserted']}，更新 {qb_stat['updated']}，总量 {qb_stat['total']}")
 
     print("=================================================================")
-    print("智面舱 AI Interview Hub V2 完整仿真业务数据装载成功！")
+    print("经纬职引-智面仓 AI Interview Hub V2 完整仿真业务数据装载成功！")
     print("=================================================================")
     print("核心演示账号 (密码统一为: 123456):")
     print(" - 学生演示求职: student@example.com (张同学，本科/北航)")
@@ -984,7 +984,7 @@ def seed(reset=True):
     db.close()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="智面舱 Demo 数据装载器")
+    parser = argparse.ArgumentParser(description="经纬职引-智面仓 Demo 数据装载器")
     parser.add_argument("--reset", action="store_true", default=True, help="重置已有数据并重新装载")
     args = parser.parse_args()
     seed(reset=args.reset)

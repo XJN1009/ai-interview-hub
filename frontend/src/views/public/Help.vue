@@ -2,7 +2,7 @@
   <div class="help-page zh-page-container">
     <div class="page-header">
       <h1 class="title">帮助中心与常见问题</h1>
-      <p class="subtitle">全面解答关于使用智面舱模拟面试、简历投递与企业协同的疑问</p>
+      <p class="subtitle">全面解答关于使用经纬职引-智面仓模拟面试、简历投递与企业协同的疑问</p>
     </div>
 
     <div class="help-content zh-card">

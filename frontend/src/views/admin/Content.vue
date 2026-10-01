@@ -3,7 +3,7 @@
     <div class="page-header">
       <div>
         <h2 class="page-title">门户与运营内容配置</h2>
-        <p class="page-subtitle">动态配置智面舱公共门户 Banner、热门搜索关键词与官方公告信息</p>
+        <p class="page-subtitle">动态配置经纬职引-智面仓公共门户 Banner、热门搜索关键词与官方公告信息</p>
       </div>
       <el-button type="primary" :loading="saving" @click="handleSave">
         保存并发布配置

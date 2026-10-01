@@ -7,7 +7,7 @@
           <el-icon :size="22" color="#FFFFFF"><Monitor /></el-icon>
         </div>
         <div class="logo-text">
-          <span class="logo-main">智面舱</span>
+          <span class="logo-main">经纬职引-智面仓</span>
           <span class="logo-sub">AI Interview Hub</span>
         </div>
       </router-link>

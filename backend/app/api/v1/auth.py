@@ -49,7 +49,7 @@ def _send_reset_email(email: str, reset_token: str) -> bool:
         logger.warning(f"[找回密码] SMTP 未配置，跳过邮件发送。邮箱={email} reset_token={reset_token}")
         return False
 
-    subject = "【智面舱】重置您的登录密码"
+    subject = "【经纬职引-智面仓】重置您的登录密码"
     reset_link = f"http://localhost:5173/forgot-password?token={reset_token}"
     body = f"您好，\n\n请点击以下链接重置密码（{RESET_TOKEN_EXPIRE_MINUTES} 分钟内有效）：\n{reset_link}\n\n若非本人操作，请忽略本邮件。"
     try:
