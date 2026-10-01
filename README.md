@@ -79,6 +79,8 @@ Copy-Item .env.example .env
 cp .env.example .env
 ```
 
+> 💡 **AI 服务配置**：`LLM_API_KEY` / `LLM_BASE_URL` 不是必填项——未配置时系统以内置沙箱引擎（Mock）运行，可先完成部署。启动后访问登录页的「AI 引擎配置」向导（`/ai-setup`）填入自己的 API Key（兼容 OpenAI 协议：OpenAI / DeepSeek / 通义 / Kimi / 本地 Ollama 等），**保存即时生效，无需重启**。页面配置优先级高于 `.env`。
+
 **2) 创建虚拟环境并安装后端依赖**（只需执行一次）：
 
 ```powershell

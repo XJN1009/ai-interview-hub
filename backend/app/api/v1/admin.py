@@ -365,19 +365,22 @@ def update_admin_content(content: dict, admin: User = Depends(require_roles(["PL
     return ResponseModel(data={"message": "首页运营配置已实时生效更新"})
 
 @router.get("/admin/ai/providers", response_model=ResponseModel[dict])
-def get_ai_providers(admin: User = Depends(require_roles(["PLATFORM_ADMIN", "SUPER_ADMIN"]))):
-    from app.core.config import settings
+def get_ai_providers(
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_roles(["PLATFORM_ADMIN", "SUPER_ADMIN"]))
+):
+    from app.services import ai_settings
+    cfg = ai_settings.get_effective_config(db)
     # Mask API key per spec: "API Key 只显示掩码，不能在页面回显完整值"
-    masked_key = "sk-mock-••••••••••••"
-    if settings.LLM_API_KEY:
-        masked_key = settings.LLM_API_KEY[:3] + "••••••••" + settings.LLM_API_KEY[-4:]
+    masked_key = ai_settings.mask_key(cfg["api_key"]) or "sk-mock-••••••••••••"
 
     return ResponseModel(data={
         "provider": "Mock / OpenAI Compatible",
-        "mode": settings.AI_MODE,
-        "model": settings.LLM_MODEL,
-        "base_url": settings.LLM_BASE_URL,
+        "mode": cfg["mode"].upper(),
+        "model": cfg["model"],
+        "base_url": cfg["base_url"],
         "api_key_masked": masked_key,
+        "configured": cfg["configured"],
         "prompt_version": "v3.0",
         "avg_latency_ms": 145,
         "total_calls_today": 128,
@@ -387,14 +390,20 @@ def get_ai_providers(admin: User = Depends(require_roles(["PLATFORM_ADMIN", "SUP
 @router.patch("/admin/ai/providers", response_model=ResponseModel[dict])
 def update_ai_provider(
     config: dict,
+    db: Session = Depends(get_db),
     admin: User = Depends(require_roles(["PLATFORM_ADMIN", "SUPER_ADMIN"]))
 ):
-    from app.core.config import settings
-    if "mode" in config:
-        settings.AI_MODE = config["mode"]
-    if "model" in config:
-        settings.LLM_MODEL = config["model"]
-    return ResponseModel(data={"message": "AI 模型服务配置已安全更新"})
+    from app.services import ai_settings
+    base_url = str(config.get("base_url", "")).strip()
+    if base_url:
+        err = ai_settings.validate_base_url(base_url)
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+    saved = ai_settings.save_config(db, config)
+    return ResponseModel(data={
+        "message": "AI 模型服务配置已安全更新并即时生效",
+        "mode": saved["mode"].upper(),
+    })
 
 @router.get("/admin/ai/logs", response_model=ResponseModel[List[dict]])
 def get_ai_logs(admin: User = Depends(require_roles(["PLATFORM_ADMIN", "SUPER_ADMIN"]))):

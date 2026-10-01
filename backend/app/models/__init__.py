@@ -17,7 +17,7 @@ from app.models.interview import (
 from app.models.learning import LearningPlan, LearningTask
 from app.models.question import QuestionBank
 from app.models.system import (
-    Notification, FileRecord, ConsentRecord, Complaint, OperationLog, AICallLog
+    Notification, FileRecord, ConsentRecord, Complaint, OperationLog, AICallLog, SystemSetting
 )
 
 __all__ = [
@@ -31,5 +31,5 @@ __all__ = [
     "Interview", "InterviewPlan", "InterviewQuestion", "InterviewAnswer",
     "AnswerEvaluation", "InterviewReport", "InterviewInvitation", "RecruiterEvaluation",
     "LearningPlan", "LearningTask",
-    "Notification", "FileRecord", "ConsentRecord", "Complaint", "OperationLog", "AICallLog"
+    "Notification", "FileRecord", "ConsentRecord", "Complaint", "OperationLog", "AICallLog", "SystemSetting"
 ]

@@ -19,6 +19,7 @@ import RegisterEnterprise from '@/views/auth/RegisterEnterprise.vue'
 import Onboarding from '@/views/auth/Onboarding.vue'
 import ForgotPassword from '@/views/auth/ForgotPassword.vue'
 import AdminLogin from '@/views/auth/AdminLogin.vue'
+import AISetup from '@/views/auth/AISetup.vue'
 
 // Public views
 import Home from '@/views/public/Home.vue'
@@ -98,6 +99,7 @@ const routes: RouteRecordRaw[] = [
   { path: '/onboarding', name: 'Onboarding', component: Onboarding, meta: { title: '新用户入驻指引', requiresAuth: true } },
   { path: '/forgot-password', name: 'ForgotPassword', component: ForgotPassword, meta: { title: '找回密码' } },
   { path: '/admin/login', name: 'AdminLogin', component: AdminLogin, meta: { title: '平台治理后台登录' } },
+  { path: '/ai-setup', name: 'AISetup', component: AISetup, meta: { title: 'AI 引擎初始化配置' } },
 
   // 独立全屏沉浸式路由 (模拟面试间与报告)
   {

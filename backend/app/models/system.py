@@ -96,6 +96,14 @@ class OperationLog(Base):
     ip = Column(String(50), default="127.0.0.1", nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
+class SystemSetting(Base):
+    """系统级键值配置（全局唯一，供自部署实例本地存储 AI 服务等配置）。"""
+    __tablename__ = "system_settings"
+
+    key = Column(String(100), primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
 class AICallLog(Base):
     __tablename__ = "ai_call_logs"
 

@@ -1,15 +1,77 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from sqlalchemy.orm import Session
 from app.core.database import get_db
+from app.core.deps import get_current_user
 from app.models.company import Company
 from app.models.job import Job, JobSkill
 from app.models.user import User
 from app.models.interview import Interview
 from app.schemas.common import ResponseModel
 from app.schemas.company import CompanyOut
+from app.services import ai_settings
 
 router = APIRouter(tags=["公共端"])
+
+
+@router.get("/public/ai-settings", response_model=ResponseModel[dict])
+def get_ai_settings(db: Session = Depends(get_db)):
+    """读取当前生效的 AI 服务配置（Key 仅返回掩码，登录前可访问）。"""
+    cfg = ai_settings.get_effective_config(db)
+    return ResponseModel(data={
+        "mode": cfg["mode"].upper(),
+        "model": cfg["model"],
+        "base_url": cfg["base_url"],
+        "api_key_masked": ai_settings.mask_key(cfg["api_key"]),
+        "configured": cfg["configured"],
+    })
+
+
+@router.put("/public/ai-settings", response_model=ResponseModel[dict])
+def update_ai_settings(
+    request: Request,
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user),
+):
+    """保存 AI 服务配置。首次配置（尚无 Key）允许匿名写入，方便登录前初始化；
+    已配置后仅允许管理员修改，避免普通用户或未授权者篡改全局引擎。"""
+    cfg = ai_settings.get_effective_config(db)
+    if cfg["configured"]:
+        role_codes = [r.role_code for r in current_user.roles] if current_user else []
+        if not any(r in ("PLATFORM_ADMIN", "SUPER_ADMIN") for r in role_codes):
+            raise HTTPException(status_code=403, detail="AI 服务已配置，修改需管理员登录")
+
+    base_url = str(data.get("base_url", "")).strip()
+    if base_url:
+        err = ai_settings.validate_base_url(base_url)
+        if err:
+            raise HTTPException(status_code=400, detail=err)
+
+    saved = ai_settings.save_config(db, data)
+    return ResponseModel(data={
+        "mode": saved["mode"].upper(),
+        "model": saved["model"],
+        "base_url": saved["base_url"],
+        "api_key_masked": ai_settings.mask_key(saved["api_key"]),
+        "configured": saved["configured"],
+        "message": "AI 服务配置已保存并即时生效",
+    })
+
+
+@router.post("/public/ai-settings/test", response_model=ResponseModel[dict])
+async def test_ai_settings(
+    data: dict,
+    db: Session = Depends(get_db),
+    current_user: Optional[User] = Depends(get_current_user),
+):
+    """测试 AI 服务连接。若 api_key 留空则使用已保存的 Key 进行验证。"""
+    cfg = ai_settings.get_effective_config(db)
+    base_url = str(data.get("base_url", "")).strip().rstrip("/") or cfg["base_url"]
+    api_key = str(data.get("api_key", "")).strip() or cfg["api_key"]
+    model = str(data.get("model", "")).strip() or cfg["model"]
+    result = await ai_settings.test_connection(base_url, api_key, model)
+    return ResponseModel(data=result)
 
 @router.get("/public/home", response_model=ResponseModel[dict])
 def get_public_home(db: Session = Depends(get_db)):

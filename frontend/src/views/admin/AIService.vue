@@ -68,15 +68,16 @@
             <el-input v-model="aiConfig.base_url" placeholder="https://api.openai.com/v1" />
           </el-form-item>
 
-          <el-form-item label="API Key (已脱敏显示，敏感信息不可明文回显)">
+          <el-form-item label="API Key (已脱敏显示，如需更新请输入新 API Key)">
             <el-input
-              v-model="aiConfig.api_key_masked"
-              placeholder="如需更新请输入新 API Key"
+              v-model="newApiKey"
+              placeholder="留空表示不修改已保存的 Key"
               show-password
             />
           </el-form-item>
 
           <el-form-item>
+            <el-button :loading="testing" @click="handleTestAI">测试连接</el-button>
             <el-button type="primary" :loading="saving" @click="handleUpdateAI">
               保存模型配置
             </el-button>
@@ -131,18 +132,20 @@
 <script setup lang="ts">
 import { ref, reactive, onMounted } from 'vue'
 import StateContainer from '@/components/StateContainer.vue'
-import { adminApi } from '@/api'
+import { adminApi, publicApi } from '@/api'
 import { ElMessage } from 'element-plus'
 
 const loading = ref(false)
 const saving = ref(false)
+const testing = ref(false)
 const error = ref('')
+const newApiKey = ref('')
 
 const aiConfig = reactive({
   mode: 'MOCK',
   model: 'mock-ai',
   base_url: 'https://api.openai.com/v1',
-  api_key_masked: 'sk-mock-••••••••••••',
+  api_key_masked: '',
   prompt_version: 'v3.0',
   avg_latency_ms: 145,
   total_calls_today: 128,
@@ -171,15 +174,46 @@ const fetchAIData = async () => {
 const handleUpdateAI = async () => {
   saving.value = true
   try {
-    await adminApi.updateAIProvider({
+    const payload: any = {
       mode: aiConfig.mode,
-      model: aiConfig.model
-    })
+      model: aiConfig.model,
+      base_url: aiConfig.base_url
+    }
+    if (newApiKey.value.trim()) {
+      payload.api_key = newApiKey.value.trim()
+    }
+    await adminApi.updateAIProvider(payload)
     ElMessage.success('AI 引擎配置已成功生效')
+    newApiKey.value = ''
+    await fetchAIData()
   } catch (err: any) {
-    ElMessage.error(err.response?.data?.detail || '更新配置失败')
+    ElMessage.error(err.response?.data?.detail || err.message || '更新配置失败')
   } finally {
     saving.value = false
+  }
+}
+
+const handleTestAI = async () => {
+  if (!aiConfig.base_url || !aiConfig.model) {
+    ElMessage.warning('请先填写 Base URL 与模型名称')
+    return
+  }
+  testing.value = true
+  try {
+    const res: any = await publicApi.testAISettings({
+      base_url: aiConfig.base_url,
+      model: aiConfig.model,
+      api_key: newApiKey.value.trim()
+    })
+    if (res?.success) {
+      ElMessage.success(res.message || '连接成功')
+    } else {
+      ElMessage.error(res?.message || '连接失败')
+    }
+  } catch (err: any) {
+    ElMessage.error(err.response?.data?.detail || err.message || '测试请求失败')
+  } finally {
+    testing.value = false
   }
 }
 

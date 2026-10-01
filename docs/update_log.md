@@ -1,6 +1,12 @@
 # 更新日志
 
 ## 2026-09-30
+- **AI 引擎配置向导（方案 A：系统级全局配置，登录前可配置）**：自部署用户无需改 `.env`、无需重启，即可在页面配置自己的 LLM API-KEY / Base URL / 模型，保存即时生效
+  - **后端存储与读取**：新增 `system_settings` 键值表（`models/system.py::SystemSetting`，随 create_all 自动建表）；新增 `services/ai_settings.py`——生效优先级 **DB > .env > 默认值**，进程内缓存 + 保存即失效；`AIProvider` 改为每次调用动态读取生效配置（13 处调用点零改动），未配置 Key 时照旧回退 mock
+  - **登录前公开接口**（`public.py`）：`GET /public/ai-settings`（Key 仅掩码回显）、`PUT /public/ai-settings`（**首次未配置允许匿名写入**，已配置后仅 PLATFORM_ADMIN/SUPER_ADMIN 可改，其余 403）、`POST /public/ai-settings/test`（真实最小 chat 请求验证连通性，失败优雅返回原因）；Base URL 仅允许 http/https 协议（400 拦截）
+  - **管理端接真**：`admin.py` 的 `GET/PATCH /admin/ai/providers` 从写死假数据改为读写同一份真实配置（支持 mode/model/base_url/api_key，空 Key 视为不修改）
+  - **前端**：新增登录前向导页 `views/auth/AISetup.vue`（路由 `/ai-setup`，模式切换 + 5 个服务商预设一键填入 OpenAI/DeepSeek/通义/Kimi/Ollama + 测试连接）；`Login.vue` 未配置时显示黄色引导横幅、底部新增"AI 引擎配置"入口；`AIService.vue` 保存支持完整字段并新增"测试连接"按钮
+  - 验证：接口 9 项断言全过（匿名/普通用户篡改 403、非法 URL 400、空 Key 保持原值、掩码不回显明文、测试连接优雅失败、清理后回退 .env）；浏览器实测 3 页面（向导回填/预设联动/登录页入口）通过，无 JS 报错；`vue-tsc` 类型检查通过
 - 面试间摄像头镜像修复：`InterviewSession.vue` 预览视频加 `transform: scaleX(-1)` 水平翻转，消除前置摄像头镜面显示（仅视觉翻转，不影响采集流）
 - **个人中心假数据全面清理**（前端 5 页 + 后端 5 接口，原则：无数据即空态，禁止写死兜底伪装繁荣）：
   - **Settings.vue 字段错位 bug + 假记录**：授权表改读后端真实字段（`scope/target_type/granted_at/revoked`，原读 `purpose/created_at/is_revoked` 导致真数据永远显示成写死文案且撤销状态恒为"生效中"）；会话表改读 `device/ip`；删除失败时注入的假授权/假会话记录；新增 scope/target_type 中文映射

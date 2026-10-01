@@ -159,6 +159,7 @@ Navbar.vue —`<el-badge is-dot>` 无条件显示红点。改为按未读数控�
 1. **新增 4.2 · 上传简历展示方式**：采用「**预览**」方案 —— 直接上传至前端显示为可打开的文档。
 2. **AI 接入范围**：接入「**真实 LLM**」—— 简历诊断、模拟面试评分/报告、学习路线生成统一接入真实模型；`AI_MODE` 切换为 `real` 并配置 `LLM_API_KEY`，不可达时回退 mock。
 3. **新增 6/8 · JD 来源**：「**两者都支持**」—— 既可从所选岗位自动带出 JD，也支持用户手动粘贴/编辑。
+4. **AI-KEY 页面配置（2026-09-30）**：「**方案 A 系统级全局配置**」—— 配置存 `system_settings` 表，DB > .env > 默认，登录前可初始化（首次匿名可写，之后仅管理员可改）；适配源码自部署场景，方案 B（每用户独立 Key）已否决。
 
 > 以上决策已确认，**已于本轮全部执行完成**（见文末「执行结果」）。
 
@@ -207,8 +208,16 @@ Navbar.vue —`<el-badge is-dot>` 无条件显示红点。改为按未读数控�
 - `RegisterPersonal.vue` 新增「真实姓名」必填输入与校验；`RegisterPersonalRequest` 新增 `name`（必填）；`auth.py` 用 `req.name` 初始化档案。
 - 顺带修复注册成功跳转 `/personal/onboarding` → `/onboarding`（原会 404）。
 
+## AI 引擎配置向导（登录前自配置 API-KEY/URL）✅
+
+- **方案（已定）：方案 A 系统级全局配置**——适配"他人下载源码本地自部署"场景：每个部署实例一份全局配置存本地库，天然即"部署者自己的 Key"；方案 B（每用户独立配置）因需改造 13 处调用点透传身份、且与"登录前配置"矛盾，已否决。
+- **后端**：`system_settings` 键值表 + `services/ai_settings.py`（优先级 DB > .env > 默认，缓存 + 保存即失效）；`AIProvider` 动态读取生效配置，未配 Key 回退 mock 不变；`public.py` 新增登录前 `GET/PUT /public/ai-settings` 与 `POST /public/ai-settings/test`（首次匿名可写，已配置后仅管理员可改；Base URL 协议校验；Key 掩码回显）；`admin.py` AI 接口从假数据改为读写真实配置。
+- **前端**：新增 `/ai-setup` 向导页（服务商预设 + 测试连接）；`Login.vue` 未配置横幅引导 + 底部入口；`AIService.vue` 保存全字段 + 测试连接。
+- 详见 [update_log.md](./update_log.md) 2026-09-30 条目。
+
 ## 环境与依赖
 
+- **AI 配置优先级（2026-09-30 起）**：`system_settings` 表（页面配置）> `.env`（`LLM_BASE_URL/LLM_API_KEY/LLM_MODEL`）> 代码默认值。自部署用户可在登录页的"AI 引擎配置"向导中直接填 Key，无需改 `.env`、无需重启。
 - `AI_MODE` 默认值与 `.env` / `.env.example` 均切换为 `REAL`；未配置 `LLM_API_KEY` 或调用失败时自动回退 mock。
 - `requirements.txt` 新增 `pypdf`、`python-docx`（用于 PDF/DOCX 文本抽取）。
   ⚠️ 本机当前无外网，依赖未能安装；`extract_file_text` 已做优雅降级（回退结构化字段文本），AI 诊断不受阻断。联网后执行 `pip install -r backend/requirements.txt` 即可启用文件文本抽取。

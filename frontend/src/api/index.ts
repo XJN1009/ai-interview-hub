@@ -18,6 +18,9 @@ export const publicApi = {
   getHotJobs: () => client.get('/jobs/hot'),
   getCompanyPublic: (id: number) => client.get(`/companies/${id}/public`),
   getCompanyJobs: (id: number) => client.get(`/companies/${id}/jobs`),
+  getAISettings: () => client.get('/public/ai-settings'),
+  updateAISettings: (data: any) => client.put('/public/ai-settings', data),
+  testAISettings: (data: any) => client.post('/public/ai-settings/test', data),
 }
 
 export const jobApi = {

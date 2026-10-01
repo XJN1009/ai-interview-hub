@@ -3,7 +3,6 @@ import json
 import logging
 from typing import Dict, Any, List, Optional
 import httpx
-from app.core.config import settings
 from app.ai.schemas import (
     ResumeParseSchema, JDParseSchema, QuestionGenSchema,
     AnswerEvalSchema, ReportGenSchema, LearningPlanSchema,
@@ -18,28 +17,34 @@ from app.ai.mock_data import (
 logger = logging.getLogger("ai_provider")
 
 class AIProvider:
-    def __init__(self):
-        self.mode = (settings.AI_MODE or "real").strip().lower()
-        self.base_url = settings.LLM_BASE_URL
-        self.api_key = settings.LLM_API_KEY
-        self.model = settings.LLM_MODEL
+    def _current_config(self) -> Dict[str, Any]:
+        """每次调用时读取生效配置（DB 覆盖 .env，带缓存，保存即生效）。"""
+        from app.core.database import SessionLocal
+        from app.services.ai_settings import get_effective_config
+        db = SessionLocal()
+        try:
+            return get_effective_config(db)
+        finally:
+            db.close()
 
     @property
     def is_real(self) -> bool:
         """仅当显式开启 real 且配置了 Key 时才调用真实模型。"""
-        return self.mode != "mock" and bool(self.api_key)
+        cfg = self._current_config()
+        return cfg["mode"] != "mock" and bool(cfg["api_key"])
 
     async def _call_llm_json(self, prompt: str, schema_class) -> Dict[str, Any]:
         """Calls real LLM API with fallback to mock if unreachable or unconfigured."""
-        if not self.is_real:
+        cfg = self._current_config()
+        if cfg["mode"] == "mock" or not cfg["api_key"]:
             return None
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {cfg['api_key']}",
             "Content-Type": "application/json"
         }
         payload = {
-            "model": self.model,
+            "model": cfg["model"],
             "messages": [
                 {"role": "system", "content": "You are a professional AI interview engine. Output ONLY valid JSON matching the requested structure."},
                 {"role": "user", "content": prompt}
@@ -49,7 +54,7 @@ class AIProvider:
 
         try:
             async with httpx.AsyncClient(timeout=25.0) as client:
-                res = await client.post(f"{self.base_url}/chat/completions", headers=headers, json=payload)
+                res = await client.post(f"{cfg['base_url'].rstrip('/')}/chat/completions", headers=headers, json=payload)
                 if res.status_code == 200:
                     data = res.json()
                     content = data["choices"][0]["message"]["content"]

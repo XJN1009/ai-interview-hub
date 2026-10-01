@@ -70,6 +70,12 @@
             <p class="form-desc">根据账号角色自动分流至求职者、企业或管理后台</p>
           </div>
 
+          <!-- AI Engine Not Configured: setup wizard hint -->
+          <div v-if="aiNotConfigured" class="ai-setup-banner" @click="router.push('/ai-setup')">
+            <el-icon :size="16" color="#D97706"><WarningFilled /></el-icon>
+            <span>AI 引擎尚未配置，点击配置您的 API Key →</span>
+          </div>
+
           <!-- Recently Used Accounts (saved locally, password never stored) -->
           <div v-if="accountHistory.length" class="history-card">
             <div class="history-head">
@@ -189,10 +195,11 @@
           </el-form>
 
           <div class="form-bottom-links">
-            <span>还没有智面舱账号？</span>
-            <router-link to="/register" class="register-cta">立即免费注册</router-link>
+            <router-link to="/register" class="register-cta">免费注册</router-link>
             <span class="link-divider">|</span>
             <router-link to="/admin/login" class="admin-link">平台治理入口</router-link>
+            <span class="link-divider">|</span>
+            <router-link to="/ai-setup" class="admin-link">AI 引擎配置</router-link>
           </div>
         </div>
       </div>
@@ -204,8 +211,9 @@
 import { reactive, ref, onMounted, nextTick } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
+import { publicApi } from '@/api'
 import { ElMessage } from 'element-plus'
-import { User, Lock, Monitor, Cpu, TrendCharts, Trophy, Iphone, Key } from '@element-plus/icons-vue'
+import { User, Lock, Monitor, Cpu, TrendCharts, Trophy, Iphone, Key, WarningFilled } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const route = useRoute()
@@ -214,6 +222,7 @@ const authStore = useAuthStore()
 const loading = ref(false)
 const loginType = ref<'account' | 'sms'>('account')
 const countdown = ref(0)
+const aiNotConfigured = ref(false)
 
 const loginForm = reactive({
   account: '',
@@ -270,6 +279,12 @@ onMounted(() => {
   if (accountHistory.value.length) {
     loginForm.account = accountHistory.value[0]
   }
+  // 检测 AI 引擎是否已配置，未配置则展示初始化引导横幅
+  publicApi.getAISettings()
+    .then((res: any) => {
+      aiNotConfigured.value = !res?.configured || res?.mode === 'MOCK'
+    })
+    .catch(() => {})
 })
 
 const fillAccount = (account: string, pwd: string) => {
@@ -510,6 +525,26 @@ const handleLogin = async () => {
 .form-desc {
   font-size: 13px;
   color: var(--zh-text-muted);
+}
+
+/* AI Setup Banner */
+.ai-setup-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #FFFBEB;
+  border: 1px solid #FDE68A;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  font-size: 12.5px;
+  color: #92400E;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.ai-setup-banner:hover {
+  background: #FEF3C7;
+  border-color: #FCD34D;
 }
 
 /* Recently Used Accounts Card */
