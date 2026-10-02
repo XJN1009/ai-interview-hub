@@ -4,26 +4,29 @@
    ================================================================= */
 
 :root {
-  /* Brand Palette */
-  --zh-primary: #2563EB;
-  --zh-primary-hover: #1D4ED8;
-  --zh-primary-light: #EFF6FF;
-  --zh-primary-focus: rgba(37, 99, 235, 0.15);
+  /* Brand Palette - 天蓝 / 浅蓝 / 灰 主题（和原版深蓝拉开明显差距） */
+  --zh-primary: #0EA5E9;
+  --zh-primary-hover: #0284C7;
+  --zh-primary-light: #E0F2FE;
+  --zh-primary-lighter: #F0F9FF;
+  --zh-primary-focus: rgba(14, 165, 233, 0.15);
 
-  /* Backgrounds */
-  --zh-bg: #F7F9FC;
+  /* Backgrounds - 蓝灰色系 */
+  --zh-bg: #EEF3F8;
   --zh-card-bg: #FFFFFF;
-  --zh-sub-bg: #F8FAFC;
+  --zh-sub-bg: #F0F5FA;
+  --zh-gray-bg: #F8FAFC;
 
-  /* Typography Colors */
-  --zh-text-title: #0F2347;
+  /* Typography Colors - 深灰蓝 */
+  --zh-text-title: #0F172A;
   --zh-text-body: #334155;
   --zh-text-muted: #64748B;
   --zh-text-light: #94A3B8;
 
-  /* Borders & Dividers */
-  --zh-border: #E7EDF5;
-  --zh-border-light: #F1F5F9;
+  /* Borders & Dividers - 灰蓝色 */
+  --zh-border: #D6E0EC;
+  --zh-border-light: #E8EEF5;
+  --zh-border-blue: #7DD3FC;
 
   /* Semantic Status Colors */
   --zh-success: #10B981;
@@ -119,8 +122,8 @@ h1, h2, h3, h4, h5, h6 {
 
 .zh-card-interactive:hover {
   transform: translateY(-2px);
-  border-color: #BFDBFE;
-  box-shadow: var(--zh-shadow-hover);
+  border-color: var(--zh-border-blue);
+  box-shadow: 0 6px 24px rgba(59, 130, 246, 0.1);
 }
 
 /* Empty State Modern Styling */

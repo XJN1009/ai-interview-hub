@@ -120,84 +120,163 @@ INTERVIEW_QUESTION_POOL = [
 def generate_mock_evaluation(question_text: str, answer_text: str, seq: int) -> Dict[str, Any]:
     ans = (answer_text or "").strip()
     ans_lower = ans.lower()
+    q = question_text or ""
 
-    # 1. Detect negative, perfunctory, or trivial answers
-    negative_patterns = ["不知道", "没用过", "随便", "不会", "不懂", "不清楚", "没接触过", "跳过", "没做过"]
+    # ========== 1. 多维度特征检测 ==========
+    # 消极/敷衍回答检测
+    negative_patterns = ["不知道", "没用过", "随便", "不会", "不懂", "不清楚", "没接触过", "跳过", "没做过", "忘了", "大概"]
     is_negative = any(p in ans for p in negative_patterns)
-    is_very_short = len(ans) < 12
+    is_very_short = len(ans) < 20
 
-    # 2. Detect technical depth keywords
-    high_tech_keywords = [
-        "canal", "binlog", "双删", "延迟双删", "最终一致性", "强一致性", "分布式锁", "redlock",
-        "互斥锁", "逻辑过期", "缓存击穿", "缓存穿透", "缓存雪崩", "布隆过滤器", "caffeine",
-        "volatile", "内存屏障", "指令重排", "happens-before", "cas", "aqs", "synchronized",
-        "聚簇索引", "非聚簇索引", "b+树", "回表", "覆盖索引", "最左前缀", "mvcc", "undo log", "redo log",
-        "分库分表", "雪花算法", "时钟回拨", "rocketmq", "kafka", "死信队列", "幂等", "分布式事务", "2pc", "tcc", "seata"
-    ]
-    matched_tech = [kw for kw in high_tech_keywords if kw in ans_lower]
+    # 技术深度关键词（按类别分组）
+    tech_keywords = {
+        "缓存一致性": ["双删", "延迟双删", "canal", "binlog", "最终一致性", "强一致性", "缓存与数据库一致性", "先更新数据库", "先删缓存"],
+        "缓存问题": ["缓存击穿", "缓存穿透", "缓存雪崩", "布隆过滤器", "互斥锁", "逻辑过期", "热点key"],
+        "分布式锁": ["分布式锁", "redisson", "redlock", "setnx", "看门狗", "watchdog", "租约", "幂等"],
+        "并发底层": ["volatile", "内存屏障", "指令重排", "happens-before", "cas", "aqs", "synchronized", "线程池", "threadlocal"],
+        "MySQL索引": ["聚簇索引", "非聚簇索引", "b+树", "回表", "覆盖索引", "最左前缀", "索引下推", "explain", "慢查询"],
+        "事务MVCC": ["mvcc", "undo log", "redo log", "隔离级别", "可重复读", "幻读", "间隙锁", "next-key lock"],
+        "分布式架构": ["分库分表", "雪花算法", "时钟回拨", "分布式事务", "2pc", "tcc", "seata", "幂等设计", "消息队列"],
+        "项目量化": ["qps", "tps", "rt", "tp99", "压测", "提升了", "降低了", "优化了", "从", "到", "倍"],
+        "STAR结构": ["项目背景", "我负责", "我做的", "遇到的问题", "解决方案", "最终结果", "效果", "收益"],
+    }
 
-    if is_negative or (is_very_short and len(matched_tech) == 0):
-        # Poor / perfunctory answer
-        prof = round(random.uniform(36.0, 48.0), 1)
-        rel = round(random.uniform(40.0, 52.0), 1)
-        comp = round(random.uniform(30.0, 42.0), 1)
-        logic = round(random.uniform(40.0, 50.0), 1)
-        depth = round(random.uniform(25.0, 38.0), 1)
-        comm = round(random.uniform(45.0, 55.0), 1)
+    matched_categories = []
+    matched_details = []
+    for cat, kws in tech_keywords.items():
+        found = [kw for kw in kws if kw in ans_lower]
+        if found:
+            matched_categories.append(cat)
+            matched_details.extend(found[:2])
+
+    # 回答质量分档
+    word_count = len(ans)
+    has_structure = any(p in ans for p in ["第一", "第二", "第三", "首先", "其次", "然后", "最后", "1.", "2.", "3."])
+    has_numbers = any(c.isdigit() for c in ans) and any(p in ans_lower for p in ["qps", "tps", "%", "倍", "ms", "万"])
+
+    # ========== 2. 分档评分与反馈生成 ==========
+    if is_negative or (is_very_short and len(matched_categories) == 0):
+        # ---- 差/敷衍回答 ----
+        prof = round(random.uniform(32.0, 45.0), 1)
+        rel = round(random.uniform(38.0, 50.0), 1)
+        comp = round(random.uniform(28.0, 40.0), 1)
+        logic = round(random.uniform(38.0, 48.0), 1)
+        depth = round(random.uniform(22.0, 35.0), 1)
+        comm = round(random.uniform(42.0, 52.0), 1)
         total_score = round(prof * 0.30 + rel * 0.20 + comp * 0.15 + logic * 0.15 + depth * 0.15 + comm * 0.05, 1)
         action = "SIMPLIFY"
-        evidence = ["候选人如实阐释了当前在相关技术点上的储备现状，未给出具体的系统性方案与原理解释"]
-        weaknesses = ["对所提核心技术的基础原理、工作机制及生产实践缺乏了解与积累"]
-        missing = ["核心基础概念定义", "典型应用场景与基本数据流向", "主流开源中间件实践认知"]
-        suggestions = ["建议针对所涉技术模块进行系统性的基础知识补强，从官方文档与基础 API 使用开始深入构建技术栈"]
-    elif len(matched_tech) >= 2 or len(ans) >= 60:
-        # High quality technical answer
-        prof = round(random.uniform(86.0, 93.0), 1)
-        rel = round(random.uniform(88.0, 95.0), 1)
+
+        q_short = q[:40] + ("..." if len(q) > 40 else "")
+        evidence = [
+            f"回答篇幅较短（{word_count}字），未围绕题目「{q_short}」展开系统性阐述",
+            "未提及任何核心技术概念或实践方案，无法判断技术掌握程度"
+        ]
+        weaknesses = [
+            "对题目考察的核心技术点缺乏基本认知，未能给出任何方向性回答",
+            "面试中遇到不会的问题时，应先说明已知的相关背景，再尝试给出思路框架，而非直接放弃"
+        ]
+        missing = [
+            f"本题考察的核心概念：{q_short}",
+            "该技术点的典型应用场景与基本工作原理",
+            "至少 1-2 个主流实现方案的名称与适用场景"
+        ]
+        suggestions = [
+            f"建议先系统学习「{q_short.split('，')[0]}」相关基础知识，从官方文档入门",
+            "面试答题技巧：即使不完全确定，也可先复述问题要点、给出思路框架，展现思考过程比空白更有价值",
+            "推荐：针对该技术点做一次专题笔记，整理核心概念 + 常见面试题 + 参考答案"
+        ]
+
+    elif len(matched_categories) >= 3 or (word_count >= 150 and has_structure and has_numbers):
+        # ---- 优秀回答 ----
+        prof = round(random.uniform(85.0, 93.0), 1)
+        rel = round(random.uniform(87.0, 95.0), 1)
         comp = round(random.uniform(82.0, 90.0), 1)
         logic = round(random.uniform(84.0, 92.0), 1)
-        depth = round(random.uniform(85.0, 92.0), 1)
-        comm = round(random.uniform(84.0, 90.0), 1)
+        depth = round(random.uniform(84.0, 92.0), 1)
+        comm = round(random.uniform(83.0, 90.0), 1)
         total_score = round(prof * 0.30 + rel * 0.20 + comp * 0.15 + logic * 0.15 + depth * 0.15 + comm * 0.05, 1)
         action = "DEEP" if seq < 5 else "FINISH"
-        matched_str = "、".join(matched_tech[:3]) if matched_tech else "相关核心架构"
+
+        cats_str = "、".join(matched_categories[:3])
+        details_str = "、".join(matched_details[:4])
         evidence = [
-            f"候选人准确阐述了以【{matched_str}】为代表的核心设计思想，具备出色的高并发架构把控力",
-            "逻辑清晰条理分明，能结合数据一致性与工程痛点给出切实落地方案"
+            f"回答覆盖了【{cats_str}】多个技术维度，深度与广度兼备",
+            f"准确提及了 {details_str} 等关键技术点，说明有实际项目经验",
+            f"回答结构清晰（{'分点阐述' if has_structure else '逻辑连贯'}），篇幅 {word_count} 字，内容充实"
         ]
         weaknesses = [
-            "在极端网络抖动、分布式长事务及节点脑裂场景下的容灾降级与监控告警需进一步细化"
+            "在极端异常场景（如网络分区、节点宕机、主从延迟）下的容灾降级方案可进一步细化",
+            "可补充更多量化数据（如压测 QPS、响应时间优化幅度）来增强说服力"
         ]
         missing = [
-            "大规模微服务链路中压测 QPS 数据指标佐证",
-            "生产级兜底回滚方案的极端容错演练"
+            "生产环境监控告警与故障自愈机制的设计思路",
+            "方案的性能瓶颈分析与扩展容量规划"
         ]
         suggestions = [
-            "可结合具体的线上业务压测指标（如 TP99、RT、QPS）量化阐述方案带来的性能增益",
-            "面试时可主动对比业界同类技术（如 Redis Redlock vs Zookeeper 分布式锁）的优劣选型取舍"
+            "面试时可主动对比不同方案的优劣取舍（如 Redis 分布式锁 vs Zookeeper 锁），展现技术选型思考",
+            "建议补充线上实际踩过的坑与排查过程，真实故障案例比理论方案更有说服力",
+            "可进一步学习该领域的前沿实践（如 Caffeine 多级缓存、Sentinel 限流降级）"
         ]
-    else:
-        # Standard/moderate answer
-        prof = round(random.uniform(72.0, 80.0), 1)
-        rel = round(random.uniform(74.0, 82.0), 1)
-        comp = round(random.uniform(68.0, 76.0), 1)
-        logic = round(random.uniform(70.0, 78.0), 1)
-        depth = round(random.uniform(66.0, 75.0), 1)
-        comm = round(random.uniform(75.0, 82.0), 1)
+
+    elif len(matched_categories) >= 1 or word_count >= 80:
+        # ---- 中等回答 ----
+        prof = round(random.uniform(68.0, 78.0), 1)
+        rel = round(random.uniform(70.0, 80.0), 1)
+        comp = round(random.uniform(65.0, 74.0), 1)
+        logic = round(random.uniform(68.0, 77.0), 1)
+        depth = round(random.uniform(62.0, 72.0), 1)
+        comm = round(random.uniform(72.0, 80.0), 1)
         total_score = round(prof * 0.30 + rel * 0.20 + comp * 0.15 + logic * 0.15 + depth * 0.15 + comm * 0.05, 1)
         action = "FOLLOW_UP" if seq < 5 else "FINISH"
+
+        cats_str = "、".join(matched_categories[:2]) if matched_categories else "基础概念"
         evidence = [
-            "候选人对提问所涉及的技术概念有一定认知，能够完成基本场景的技术表述"
+            f"对【{cats_str}】有基本认知，能够回答出核心要点",
+            f"回答篇幅 {word_count} 字，基本覆盖了题目的主要考察方向"
         ]
         weaknesses = [
-            "回答偏向基础用法，对底层运行机理与高并发边界条件探讨较浅"
+            "回答偏向基础用法介绍，对底层原理与高并发边界条件探讨较浅",
+            ("缺少量化数据支撑，建议结合具体项目中的实际效果展开" if not has_numbers else "量化数据较少，可补充更多具体指标")
         ]
         missing = [
-            "并发安全机制的底层实现原理",
-            "性能调优与故障排查思路"
+            "技术方案的底层实现原理与工作机制",
+            "生产环境中的异常处理与降级兜底方案",
+            "不同技术方案的对比选型与适用场景"
         ]
         suggestions = [
-            "建议多结合具体项目场景中的线上踩坑经验展开，增强回答的工程实践深度"
+            "建议结合自己项目中的真实场景展开，用 STAR 法则（情境-任务-行动-结果）组织回答",
+            "深挖一个核心技术点的源码实现，而不是泛泛了解多个技术的表面用法",
+            "面试前准备 2-3 个自己主导的项目案例，每个都能讲清楚遇到的难点与解决过程"
+        ]
+
+    else:
+        # ---- 偏短/一般回答 ----
+        prof = round(random.uniform(55.0, 65.0), 1)
+        rel = round(random.uniform(58.0, 68.0), 1)
+        comp = round(random.uniform(50.0, 60.0), 1)
+        logic = round(random.uniform(55.0, 65.0), 1)
+        depth = round(random.uniform(45.0, 55.0), 1)
+        comm = round(random.uniform(60.0, 70.0), 1)
+        total_score = round(prof * 0.30 + rel * 0.20 + comp * 0.15 + logic * 0.15 + depth * 0.15 + comm * 0.05, 1)
+        action = "BASIC"
+
+        evidence = [
+            f"回答篇幅 {word_count} 字，内容较为简略，覆盖知识点有限",
+            "基本理解题意，但回答深度与广度均有明显提升空间"
+        ]
+        weaknesses = [
+            "回答不够结构化，缺乏清晰的逻辑层次",
+            "技术细节不足，未能展开说明核心原理"
+        ]
+        missing = [
+            "题目的核心考察点与标准答案框架",
+            "至少 2-3 个具体的技术实现细节",
+            "结合实际项目的案例与数据支撑"
+        ]
+        suggestions = [
+            "练习用「总-分-总」结构答题：先给结论，再分点展开，最后总结",
+            "针对本题涉及的技术点，整理一份包含「原理 + 应用 + 优缺点」的学习笔记",
+            "多做模拟面试练习，提升临场组织语言的能力"
         ]
 
     return {
@@ -342,35 +421,96 @@ def generate_adaptive_mock_question(
             "hints": "从算法位分布、WorkerID 分配、时钟同步容错等关键维度分析"
         }
 
-def generate_mock_report(interview_id: int, total_questions: int, scores: List[float] = None) -> Dict[str, Any]:
-    avg_score = round(sum(scores) / len(scores), 1) if scores else 82.5
-    perf = "表现优异" if avg_score >= 85 else ("表现良好" if avg_score >= 75 else "需继续提升")
+def generate_mock_report(interview_id: int, total_questions: int, scores: List[float] = None,
+                         qa_pairs: List[Dict[str, Any]] = None, job_title: str = None) -> Dict[str, Any]:
+    # 严格基于实际答题得分计算，不瞎编
+    if scores and len(scores) > 0:
+        avg_score = round(sum(scores) / len(scores), 1)
+    else:
+        avg_score = 40.0  # 没答题就给低分
 
+    # 表现等级
+    if avg_score >= 85:
+        perf = "表现优异"
+    elif avg_score >= 75:
+        perf = "表现良好"
+    elif avg_score >= 60:
+        perf = "基本达标"
+    elif avg_score >= 45:
+        perf = "有待提升"
+    else:
+        perf = "基础薄弱"
+
+    # 根据平均分波动生成维度分（围绕平均分±5分，保持真实感）
+    import random
     dim_scores = {
-        "专业基础": round(random.uniform(82.0, 87.0), 1),
-        "项目经验": round(random.uniform(80.0, 86.0), 1),
-        "系统设计": round(random.uniform(74.0, 80.0), 1),
-        "沟通表达": round(random.uniform(84.0, 89.0), 1),
-        "综合素质": round(random.uniform(80.0, 85.0), 1)
+        "专业基础": round(max(20, min(98, avg_score + random.uniform(-4, 4))), 1),
+        "项目经验": round(max(20, min(98, avg_score + random.uniform(-5, 5))), 1),
+        "系统设计": round(max(20, min(98, avg_score + random.uniform(-6, 4))), 1),
+        "沟通表达": round(max(20, min(98, avg_score + random.uniform(-3, 5))), 1),
+        "综合素质": round(max(20, min(98, avg_score + random.uniform(-4, 4))), 1),
     }
 
-    strengths = [
-        "Redis 基础扎实：清晰掌握常见数据结构及应用场景，能准确分析缓存穿透与击穿的本质区别",
-        "表达逻辑清晰流畅：回答问题分点展开，层次分明，具有良好的技术沟通与表达习惯",
-        "项目经历具备真实度：能结合秒杀中台与限流场景讲述工程落地实践，思路严谨"
-    ]
+    # 根据分数分档生成反馈内容
+    if avg_score >= 80:
+        strengths = [
+            "技术基础扎实：核心概念理解准确，能结合实际项目场景展开说明",
+            "回答逻辑清晰：分点阐述有条理，能主动说明方案的取舍与边界",
+            "具备工程思维：不仅讲原理，还能联系生产环境中的实际问题"
+        ]
+        weaknesses = [
+            "极端异常场景的容灾方案可进一步细化",
+            "量化数据（如压测指标、性能提升幅度）可更具体"
+        ]
+        suggestions = [
+            "面试时主动对比不同技术方案的优劣，展现技术选型思考",
+            "补充线上故障排查案例，真实踩坑经验比理论方案更有说服力"
+        ]
+        summary = f"综合评分 {avg_score} 分，整体表现优异。技术基础扎实，具备较好的工程实践能力与系统思维，在核心技术栈上有较深入的理解。建议继续深化高并发与分布式架构的实战经验。"
 
-    weaknesses = [
-        "分布式架构深挖尚需深入：面对复杂分布式事务（如两阶段提交与 TCC）与缓存双写极端异常处理时思考深度略显不足",
-        "高并发生产压测经验可更具体：缺乏在极限压力下数据库连接池与慢查询定位的具体量化案例"
-    ]
+    elif avg_score >= 65:
+        strengths = [
+            "对核心技术概念有基本认知，能回答出主要要点",
+            "回答围绕题目展开，相关性较好"
+        ]
+        weaknesses = [
+            "回答偏向基础用法，对底层原理与边界条件探讨较浅",
+            "缺少项目实战案例与量化数据支撑"
+        ]
+        suggestions = [
+            "建议深入学习核心技术的底层实现原理，不要只停留在 API 使用层面",
+            "用 STAR 法则组织回答：情境-任务-行动-结果，增强说服力"
+        ]
+        summary = f"综合评分 {avg_score} 分，整体表现中等。对岗位所需技术有基本了解，但深度和广度都有明显提升空间。建议针对薄弱环节进行系统性补强。"
 
-    suggestions = [
-        "深入精进 Redis 高级进阶：建议重点复习 Redisson 分布式锁 Watch Dog 续期机制与 Redis 主从复制原理",
-        "扩充系统设计实战：建议练习千万级高并发秒杀发号器与分布式链路追踪（SkyWalking/OpenTelemetry）的整体设计思路"
-    ]
+    elif avg_score >= 50:
+        strengths = [
+            "基本理解题意，能给出部分相关回答"
+        ]
+        weaknesses = [
+            "回答内容较浅，缺乏技术细节与原理说明",
+            "结构不够清晰，知识点覆盖不全"
+        ]
+        suggestions = [
+            "先夯实基础概念，再深入进阶内容，循序渐进",
+            "多做模拟面试练习，提升临场组织语言的能力"
+        ]
+        summary = f"综合评分 {avg_score} 分，基础有待加强。对题目涉及的技术点理解不够深入，需要系统性地复习基础知识并加强实战练习。"
 
-    summary = f"综合评分 {avg_score} 分，整体技术基本功扎实，具有较强的工程思维与实操能力。在基础组件（Redis、MySQL、Java 并发）方面表现稳定，建议针对高并发极限容灾与分布式架构设计持续深化训练。"
+    else:
+        strengths = [
+            "态度认真，能尝试回答问题"
+        ]
+        weaknesses = [
+            "对题目考察的核心技术点缺乏基本认知",
+            "回答内容过于简略，未能展开说明"
+        ]
+        suggestions = [
+            "建议从最基础的概念开始学习，先建立完整的知识框架",
+            "面试中遇到不会的问题，可以先说明已知的相关背景，展现思考过程",
+            "推荐：针对目标岗位的核心技术栈，制定分阶段学习计划"
+        ]
+        summary = f"综合评分 {avg_score} 分，目前基础较薄弱。对题目涉及的技术点了解较少，建议从基础知识开始系统学习，多结合项目实践加深理解。"
 
     return {
         "total_score": avg_score,

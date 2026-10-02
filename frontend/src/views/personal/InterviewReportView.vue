@@ -151,7 +151,7 @@
                 <div class="benchmark-section zh-card">
                   <div class="section-head">
                     <h3 class="sec-title">核心技能胜任力达标对照表</h3>
-                    <span class="sec-sub">对照一线大厂初/中级工程师岗位基准线 (Benchmark: 75分)</span>
+                    <span class="sec-sub">对照一线大厂初/中级工程师岗位基准线 (Benchmark: 60分)</span>
                   </div>
                   <div class="benchmark-grid">
                     <div
@@ -172,13 +172,13 @@
                         <div class="bm-progress-bg">
                           <div
                             class="bm-progress-fill"
-                            :style="{ width: item.score + '%', backgroundColor: item.score >= 80 ? '#10B981' : item.score >= 70 ? '#F59E0B' : '#EF4444' }"
+                            :style="{ width: item.score + '%', backgroundColor: item.score >= 75 ? '#10B981' : item.score >= 60 ? '#F59E0B' : '#EF4444' }"
                           ></div>
-                          <div class="bm-benchmark-line" style="left: 75%" title="大厂基准线 75分"></div>
+                          <div class="bm-benchmark-line" style="left: 60%" title="大厂基准线 60分"></div>
                         </div>
                         <div class="bm-num-row">
                           <span class="actual-score">当前：{{ item.score }}分</span>
-                          <span class="target-score">基准：75分</span>
+                          <span class="target-score">基准：60分</span>
                         </div>
                       </div>
                     </div>
@@ -494,14 +494,23 @@ const displayDimensionScores = computed(() => {
   }
 })
 
-const competencyBenchmarks = computed(() => [
-  { name: 'Java 基础与多线程', score: 85 },
-  { name: 'Redis 缓存架构', score: 82 },
-  { name: 'MySQL 事务与索引优化', score: 78 },
-  { name: 'Spring Boot 框架源码', score: 80 },
-  { name: '微服务与分布式事务', score: 72 },
-  { name: '高并发系统限流容灾', score: 70 }
-])
+const competencyBenchmarks = computed(() => {
+  const base = report.value?.total_score ?? 40
+  // 围绕实际总分上下波动 ±6 分，保证各技能有差异但不脱离真实水平
+  const jitter = [-4, +2, -6, -1, -8, -10]
+  const names = [
+    'Java 基础与多线程',
+    'Redis 缓存架构',
+    'MySQL 事务与索引优化',
+    'Spring Boot 框架源码',
+    '微服务与分布式事务',
+    '高并发系统限流容灾'
+  ]
+  return names.map((name, i) => ({
+    name,
+    score: Math.max(5, Math.min(98, Math.round(base + jitter[i])))
+  }))
+})
 
 const getDimensionDescription = (name: string, score: number) => {
   if (score >= 85) return `${name}表现优异，技术广度与深度兼备，能够准确回答核心机制与底层原理。`
