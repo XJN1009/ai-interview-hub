@@ -1,5 +1,5 @@
 import client from './client'
-import type { UserInfo, JobItem, ResumeItem, ApplicationItem, InterviewSession, InterviewReportData, PaperPreview, HistoryComparison, WeakQuestionsResult, QuestionBankListResult } from '@/types'
+import type { UserInfo, JobItem, ResumeItem, ApplicationItem, InterviewSession, InterviewReportData, PaperPreview, HistoryComparison, WeakQuestionsResult, QuestionBankListResult, ReverseQAResponse } from '@/types'
 
 export const authApi = {
   login: (data: any) => client.post('/auth/login', data),
@@ -83,6 +83,8 @@ export const interviewApi = {
   pauseInterview: (id: number) => client.post(`/interviews/${id}/pause`),
   resumeInterview: (id: number) => client.post(`/interviews/${id}/resume`),
   answerQuestion: (id: number, data: any) => client.post(`/interviews/${id}/answer`, data),
+  askReverseQuestion: (id: number, data: { question: string }) =>
+    client.post<any, ReverseQAResponse>(`/interviews/${id}/reverse-question`, data),
   finishInterview: (id: number) => client.post(`/interviews/${id}/finish`),
   getReport: (id: number) => client.get<any, InterviewReportData>(`/interviews/${id}/report`),
   // 结构化题库组卷：配比查询 / 组卷预览 / 题库统计

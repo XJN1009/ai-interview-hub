@@ -101,6 +101,36 @@ export interface InterviewQuestionView {
   evaluation?: any
 }
 
+export interface ReverseQAItem {
+  id: number
+  question: string
+  answer: string
+  created_at: string
+}
+
+export interface AnswerResult {
+  is_finished?: boolean
+  is_empty?: boolean
+  overtime?: boolean
+  overtime_sec?: number
+  raw_score?: number
+  total_score?: number
+  phase?: 'ANSWERING' | 'REVERSE_QA'
+  total_questions?: number
+  remaining_seconds?: number
+  next_question?: InterviewQuestionView | null
+  is_followup?: boolean
+}
+
+export interface ReverseQAResponse {
+  id: number
+  question: string
+  answer: string
+  created_at: string
+  remaining_seconds: number | null
+  answered_count: number
+}
+
 export interface InterviewSession {
   id: number
   user_id: number
@@ -111,11 +141,14 @@ export interface InterviewSession {
   mode: string
   difficulty: string
   status: string
+  phase?: string
   current_question_seq: number
   total_questions: number
   duration_minutes: number
   questions: InterviewQuestionView[]
   current_question?: InterviewQuestionView
+  reverse_qa?: ReverseQAItem[]
+  remaining_seconds?: number
 }
 
 export interface QuestionBankItem {
