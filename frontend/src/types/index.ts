@@ -282,6 +282,22 @@ export interface InterviewReportData {
     avg_usage_ratio: number
     overtime_skills: string[]
   } | null
+  /** 反问环节汇总（v2 新增）；旧报告无此字段时为 null */
+  reverse_summary?: {
+    questions: {
+      seq: number
+      candidate_text: string
+      ai_response: string
+      evaluation?: {
+        comment?: string
+        highlights?: string[]
+        suggestions?: string[]
+      }
+    }[]
+    answered_count: number
+    skipped: boolean
+    comment: string
+  } | null
 }
 
 export interface ExternalApplicationItem {

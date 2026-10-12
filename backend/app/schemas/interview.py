@@ -70,6 +70,8 @@ class InterviewOut(BaseModel):
     mode: str
     difficulty: str
     status: str
+    # 环节标记：OPENING 开场引导 / QA 逐题作答 / REVERSE 反问环节 / DONE 已进入结算
+    phase: str = "QA"
     current_question_seq: int
     total_questions: int
     duration_minutes: int
@@ -95,6 +97,9 @@ class AnswerEvaluationOut(BaseModel):
     provenance: Dict[str, Any] = {}
     version: int = 0
     report_state: str = "PENDING"
+    # 环节标记：逐题作答结束后进入 REVERSE，前端据此切换到反问卡片
+    phase: Optional[str] = None
+    finished_qa: bool = False  # 逐题作答是否已全部结束（与 is_finished 同义，语义更明确）
     answer_id: int
     total_score: float
     dimensions: Dict[str, float]
@@ -115,6 +120,23 @@ class AnswerEvaluationOut(BaseModel):
     overtime_sec: int = 0
     is_empty: bool = False
     is_skipped: bool = False  # 主动跳过，评语温和不影响能力画像
+
+class ReverseQuestionOut(BaseModel):
+    seq: int
+    candidate_text: str
+    ai_response: str
+    evaluation: Dict[str, Any] = {}
+
+class ReverseStateOut(BaseModel):
+    """反问环节状态：用于面试间渲染反问卡片与历史问答。"""
+    phase: str = "QA"
+    max_count: int = 3
+    used_count: int = 0
+    remaining: int = 3
+    questions: List[ReverseQuestionOut] = []
+
+class ReverseSubmitRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
 
 class InterviewReportOut(BaseModel):
     provenance: Dict[str, Any] = {}
@@ -137,6 +159,8 @@ class InterviewReportOut(BaseModel):
     questions_analysis: List[Dict[str, Any]] = []
     # 时间维度分析：逐题用时/限时/超时情况与汇总（服务端计时口径）
     time_analysis: Optional[Dict[str, Any]] = None
+    # 反问环节汇总（questions/answered_count/skipped/comment）；旧报告无此字段时为 None
+    reverse_summary: Optional[Dict[str, Any]] = None
 
 class InterviewInvitationCreate(BaseModel):
     application_id: int

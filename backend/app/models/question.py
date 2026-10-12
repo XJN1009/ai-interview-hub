@@ -22,6 +22,9 @@ class QuestionBank(Base):
     question_type = Column(String(20), default="PROFESSIONAL", nullable=False, index=True)
     # 考察技能（Java / Redis / MySQL / Vue3 ...），通用题为"综合素养"
     skill_name = Column(String(100), default="综合素养", nullable=False, index=True)
+    # 技能别名（逗号分隔）：组卷时与岗位技能做归一化匹配，
+    # 如 Java并发 题填 "Java,多线程,并发,JUC"，使"消息队列"这类岗位技能也能命中 Kafka 题
+    aliases = Column(String(255), nullable=True)
     # 面试阶段（专业基础 / 深度探究 / 项目深挖 / 系统设计 / 综合素养 / 压力应对）
     stage = Column(String(50), default="专业基础", nullable=False)
     difficulty = Column(String(20), default="MEDIUM", nullable=False)  # EASY, MEDIUM, HARD
@@ -34,6 +37,8 @@ class QuestionBank(Base):
     time_limit_sec = Column(Integer, default=180, nullable=False)
 
     source = Column(String(30), default="SEED", nullable=False)  # SEED, MANUAL, AI_GENERATED
+    # APPROVED 已审可入卷 / PENDING 待审：组卷只取 APPROVED，防止未审题目回流污染卷面
+    review_status = Column(String(20), default="APPROVED", nullable=False)
     enabled = Column(Boolean, default=True, nullable=False)
     usage_count = Column(Integer, default=0, nullable=False)  # 抽题时用于均衡出题
 

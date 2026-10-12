@@ -40,6 +40,7 @@ def seed_question_bank(db, rebuild: bool = False) -> dict:
             "job_category": item.get("job_category") or "通用",
             "question_type": item.get("question_type") or "PROFESSIONAL",
             "skill_name": item.get("skill_name") or "综合素养",
+            "aliases": item.get("aliases"),
             "stage": item.get("stage") or "专业基础",
             "difficulty": item.get("difficulty") or "MEDIUM",
             "reference_points_json": json.dumps(item.get("reference_points") or [], ensure_ascii=False),

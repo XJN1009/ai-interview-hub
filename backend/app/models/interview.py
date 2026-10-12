@@ -20,6 +20,9 @@ class Interview(Base):
     purpose = Column(String(30), default="NORMAL", nullable=False)
     derived_from_id = Column(Integer, nullable=True)  # 重练来源面试 ID（可空）
     status = Column(String(50), default="CREATED", nullable=False)         # CREATED, READY, IN_PROGRESS, PAUSED, COMPLETED, CANCELLED, EXPIRED
+    # 环节标记：OPENING 开场引导 / QA 逐题作答 / REVERSE 反问环节 / DONE 已进入结算。
+    # 只标记环节，不参与状态机迁移——start/pause/resume/abort 仍由 status 控制。
+    phase = Column(String(20), default="OPENING", nullable=False)
     current_question_seq = Column(Integer, default=1, nullable=False)
     version = Column(Integer, default=0, nullable=False)
     processing_token = Column(String(64), nullable=True)
@@ -43,6 +46,28 @@ class Interview(Base):
     questions = relationship("InterviewQuestion", back_populates="interview", cascade="all, delete-orphan")
     report = relationship("InterviewReport", back_populates="interview", uselist=False, cascade="all, delete-orphan")
     recruiter_evaluation = relationship("RecruiterEvaluation", back_populates="interview", uselist=False, cascade="all, delete-orphan")
+    reverse_questions = relationship("InterviewReverseQuestion", back_populates="interview",
+                                     cascade="all, delete-orphan", order_by="InterviewReverseQuestion.seq")
+
+class InterviewReverseQuestion(Base):
+    """反问环节记录：候选人向 AI 面试官提出的问题与得到的回答。
+
+    与逐题作答（InterviewQuestion/InterviewAnswer）分开存放：
+    反问问答不计入 rubric 总分，只作为报告的"反问表现"素材，避免变相惩罚内向型候选人。
+    """
+
+    __tablename__ = "interview_reverse_questions"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    interview_id = Column(Integer, ForeignKey("interviews.id"), nullable=False, index=True)
+    seq = Column(Integer, nullable=False)  # 第几条反问（1 起）
+    candidate_text = Column(Text, nullable=False)
+    ai_response = Column(Text, nullable=False)
+    # 反问质量点评（JSON：comment/highlights/suggestions），仅作报告素材
+    evaluation_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    interview = relationship("Interview", back_populates="reverse_questions")
 
 class InterviewPlan(Base):
     __tablename__ = "interview_plans"
@@ -141,6 +166,8 @@ class InterviewReport(Base):
     suggestions_json = Column(Text, nullable=False)
     summary = Column(Text, nullable=False)
     provenance_json = Column(Text, nullable=True)
+    # 反问环节汇总（JSON：questions[{seq,candidate_text,ai_response,evaluation}] + comment + skipped）
+    reverse_summary_json = Column(Text, nullable=True)
     status = Column(String(50), default="COMPLETED", nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 

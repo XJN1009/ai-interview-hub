@@ -110,6 +110,11 @@ export const interviewApi = {
     return result
   },
   finishInterview: (id: number) => client.post(`/interviews/${id}/finish`, null, { timeout: 120000 }),
+  // 反问环节：逐题作答结束后进入，候选人的提问不计入总分
+  getReverse: (id: number) => client.get<any, any>(`/interviews/${id}/reverse`),
+  submitReverse: (id: number, text: string) =>
+    client.post<any, any>(`/interviews/${id}/reverse`, { text }, { timeout: 120000 }),
+  skipReverse: (id: number) => client.post<any, any>(`/interviews/${id}/reverse/skip`),
   abortInterview: (id: number) => client.post(`/interviews/${id}/abort`),
   getReport: (id: number) => client.get<any, InterviewReportData>(`/interviews/${id}/report`),
   // 结构化题库组卷：配比查询 / 组卷预览 / 题库统计

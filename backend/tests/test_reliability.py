@@ -306,7 +306,15 @@ def test_report_failure_is_recoverable_without_regrading(monkeypatch):
     payload = {"question_id": qids[0], "request_id": "request-last", "text": "最终答案"}
     response = client.post(f"/api/v1/interviews/{iid}/answer", headers=headers[0], json=payload)
     assert response.status_code == 200, response.text
-    assert response.json()["data"]["is_finished"] and response.json()["data"]["report_state"] == "FAILED"
+    # v2：逐题作答结束进入反问环节，不再自动结算
+    assert response.json()["data"]["is_finished"] and response.json()["data"]["phase"] == "REVERSE"
+    # 结算阶段报告生成失败：保留已提交作答并把 report_state 标记为 FAILED，便于稍后重试
+    # （TestClient 默认向上抛出服务端异常，此处显式捕获以验证状态回写）
+    with pytest.raises(RuntimeError):
+        client.post(f"/api/v1/interviews/{iid}/finish", headers=headers[0])
+    with SessionLocal() as db:
+        assert db.get(Interview, iid).report_state == "FAILED"
+        assert db.query(AnswerEvaluation).count() == 1
     monkeypatch.setattr(ai_provider, "generate_report", original)
     finish = client.post(f"/api/v1/interviews/{iid}/finish", headers=headers[0])
     assert finish.status_code == 200, finish.text
@@ -327,6 +335,9 @@ def test_competencies_are_per_skill_with_real_question_evidence(monkeypatch):
         monkeypatch.setattr(ai_provider, "evaluate_answer", evaluate)
         response = client.post(f"/api/v1/interviews/{iid}/answer", headers=headers[0], json={"question_id": qid, "request_id": f"skill-{index:04}", "text": "可验证的作答"})
         assert response.status_code == 200, response.text
+    # v2：逐题作答结束后交卷才结算（生成报告与能力分）
+    finish = client.post(f"/api/v1/interviews/{iid}/finish", headers=headers[0])
+    assert finish.status_code == 200, finish.text
     with SessionLocal() as db:
         comps = {c.competency_name: c.score for c in db.query(UserCompetency).all()}
         assert comps == {"Python": 60, "SQL": 90}
@@ -375,6 +386,9 @@ def test_learning_failure_retries_without_duplicate_report_or_competency(monkeyp
     monkeypatch.setattr(interview_core, "generate_and_store_learning_plan", fail)
     response = client.post(f"/api/v1/interviews/{iid}/answer", headers=headers[0], json={"question_id": qids[0], "request_id": "learning-last", "text": "有效回答"})
     assert response.status_code == 200
+    # v2：交卷时才结算；学习路线生成失败不影响已保存的报告与能力分
+    finish = client.post(f"/api/v1/interviews/{iid}/finish", headers=headers[0])
+    assert finish.status_code == 200, finish.text
     with SessionLocal() as db:
         assert db.get(Interview, iid).learning_state == "FAILED"
         assert db.query(InterviewReport).count() == db.query(CompetencyHistory).count() == 1

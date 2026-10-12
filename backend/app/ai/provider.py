@@ -8,7 +8,8 @@ import httpx
 from app.ai.schemas import (
     ResumeParseSchema, JDParseSchema, QuestionGenSchema,
     AnswerEvalSchema, ReportGenSchema, LearningPlanSchema,
-    MatchExplainerSchema, ResumeOptimizeSchema, ResumeRewriteSchema
+    MatchExplainerSchema, ResumeOptimizeSchema, ResumeRewriteSchema,
+    ReverseAnswerSchema
 )
 from app.ai.mock_data import (
     MOCK_RESUME_PARSED, MOCK_JD_PARSED,
@@ -401,6 +402,51 @@ class AIProvider:
         if real_res:
             return real_res
         return {"projects": [], "skills": [], "work_experience": [], "changes": []}
+
+    @traced
+    async def answer_reverse_question(
+        self, job_title: str, question: str, jd_text: str = None,
+        qa_summary: str = None
+    ) -> Dict[str, Any]:
+        """反问环节：AI 面试官以第一人称回答候选人的提问，并给出过程性点评。
+
+        约束：回答克制真实（2~5 句）；薪资福利与未公开业务细节一律以"HR 环节详谈/不便透露"
+        式话术回避，不编造具体数字；回答后不反问候选人（保持环节边界）。
+        """
+        prompt = (
+            f"You are the interviewer for the '{job_title}' position, now in the candidate-question (反问) phase.\n"
+            f"=== Job Description (JD) ===\n{(jd_text or 'N/A')[:1500]}\n\n"
+            f"=== Interview Q&A Summary ===\n{(qa_summary or 'N/A')[:1500]}\n\n"
+            f"The candidate asks: {question}\n\n"
+            "Requirements:\n"
+            "- Answer in 中文, first person as the interviewer, 2 to 5 sentences, concrete and restrained.\n"
+            "- For salary, benefits, headcount or undisclosed internal details, decline politely "
+            "(e.g. \"这个我们会在 HR 环节详细沟通\") and never invent specific numbers or promises.\n"
+            "- Do NOT ask the candidate any question back.\n"
+            "- evaluation.comment: one short 中文 paragraph on the quality of this question "
+            "(does it show interest in the role/team/growth, does it add information).\n"
+            "- evaluation.highlights: 1-2 中文 bullets on what was good about the question.\n"
+            "- evaluation.suggestions: 1-2 中文 bullets on how to ask better next time.\n"
+            "Output JSON: {\"answer\": str, \"evaluation\": {\"comment\": str, "
+            "\"highlights\": [str], \"suggestions\": [str]}}"
+        )
+        real_res = await self._call_llm_json(prompt, ReverseAnswerSchema, "REVERSE_ANSWER")
+        if real_res:
+            return real_res
+
+        # Mock 兜底：无 Key 或调用失败时仍让反问流程可走通（与评分链路的降级策略一致）
+        return {
+            "answer": (
+                f"这个问题问得挺实在。就「{job_title}」来说，团队目前更看重能把问题拆清楚、"
+                "并且能把方案落到可验证指标上的人。具体到岗位的分工与协作方式，"
+                "我可以告诉你我们日常是怎么配合的，但涉及未公开的业务规划就不方便展开了。"
+            ),
+            "evaluation": {
+                "comment": "这个问题体现了你对岗位实际工作方式的关注，属于有效提问。",
+                "highlights": ["关注了团队的真实工作方式，而不是只问福利"],
+                "suggestions": ["可以再追问一个具体场景，例如「最近半年团队遇到的最大挑战是什么」"],
+            },
+        }
 
     async def explain_job_match(
         self, job_title: str, candidate_skills: List[str], required_skills: List[str]

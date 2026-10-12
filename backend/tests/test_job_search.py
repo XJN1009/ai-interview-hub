@@ -9,6 +9,7 @@ from threading import Barrier
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, inspect, text
 from sqlalchemy.orm import Session
@@ -414,7 +415,9 @@ def test_legacy_upgrade_is_additive_and_repeatable():
                 command.upgrade(cfg, "head")
                 command.upgrade(cfg, "head")
                 assert connection.execute(text("SELECT email FROM users")).scalar() == "retained@test"
-                assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == "0006_user_ai_settings"
+                # 断言升级到当前 head，而不是硬编码某个版本号——否则每次新增迁移都会让这条用例失效
+                expected_head = ScriptDirectory.from_config(cfg).get_current_head()
+                assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar() == expected_head
             assert {"analysis_json", "prep_json", "submitted_at", "last_contact_at", "version"} <= {
                 c["name"] for c in inspect(temporary_engine).get_columns("job_search_opportunities")}
         finally:

@@ -265,6 +265,31 @@
                   </p>
                 </div>
 
+                <!-- 反问环节：AI 面试官回答候选人的提问（不计入总分，仅作复盘素材） -->
+                <div v-if="report.reverse_summary" class="reverse-card">
+                  <h3 class="sec-title">反问环节表现</h3>
+                  <p class="rc-comment">{{ report.reverse_summary.comment }}</p>
+                  <div v-if="report.reverse_summary.questions?.length" class="rc-thread">
+                    <div v-for="item in report.reverse_summary.questions" :key="item.seq" class="rc-item">
+                      <div class="rc-ask">
+                        <span class="rc-role">你的提问</span>
+                        <span class="rc-text">{{ item.candidate_text }}</span>
+                      </div>
+                      <div class="rc-reply">
+                        <span class="rc-role reply">面试官回答</span>
+                        <span class="rc-text">{{ item.ai_response }}</span>
+                      </div>
+                      <div v-if="item.evaluation?.comment" class="rc-eval">
+                        {{ item.evaluation.comment }}
+                      </div>
+                      <ul v-if="item.evaluation?.suggestions?.length" class="rc-suggest">
+                        <li v-for="(s, i) in item.evaluation.suggestions" :key="i">{{ s }}</li>
+                      </ul>
+                    </div>
+                  </div>
+                  <p v-else class="rc-tip">本次未使用反问环节。</p>
+                </div>
+
                 <div class="questions-accordion">
                   <el-collapse v-model="activeQuestions">
                     <el-collapse-item
@@ -1333,5 +1358,90 @@ onMounted(() => {
   border-radius: 4px;
   border: 1px dashed #475569;
   flex-shrink: 0;
+}
+
+/* 反问环节区块 */
+.reverse-card {
+  margin-top: 18px;
+  padding: 18px 20px;
+  border: 1px solid #E2E8F0;
+  border-radius: 12px;
+  background: #FFFFFF;
+}
+
+.rc-comment {
+  margin: 10px 0 0;
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.rc-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.rc-item {
+  padding: 14px 16px;
+  border: 1px solid #E2E8F0;
+  border-radius: 10px;
+  background: #F8FAFC;
+}
+
+.rc-ask,
+.rc-reply {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.rc-reply {
+  margin-top: 10px;
+}
+
+.rc-role {
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  border-radius: 6px;
+  background: #EFF6FF;
+  color: #2563EB;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.rc-role.reply {
+  background: #E2E8F0;
+  color: #475569;
+}
+
+.rc-text {
+  color: #334155;
+  font-size: 14px;
+  line-height: 1.8;
+}
+
+.rc-eval {
+  margin-top: 10px;
+  padding-left: 10px;
+  border-left: 2px solid #CBD5E1;
+  color: #64748B;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.rc-suggest {
+  margin: 8px 0 0;
+  padding-left: 30px;
+  color: #64748B;
+  font-size: 13px;
+  line-height: 1.8;
+}
+
+.rc-tip {
+  margin: 10px 0 0;
+  color: #94A3B8;
+  font-size: 13px;
 }
 </style>

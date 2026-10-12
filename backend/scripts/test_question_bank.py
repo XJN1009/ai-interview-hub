@@ -134,7 +134,7 @@ check("重复 start → 409", r2.status_code == 409, str(r2.status_code))
 # 逐题作答直到服务端判定完成（mock 高分答案会触发 DEEP 追问，总题数可能 +1/+2）
 answered = 0
 followup_seen = False
-finished = False
+qa_done = False
 for _ in range(10):
     r = answer(iv_id, GOOD_ANS, 90)
     if r is None or r.status_code != 200:
@@ -144,13 +144,14 @@ for _ in range(10):
     answered += 1
     if d.get("is_followup"):
         followup_seen = True
-    if d.get("is_finished"):
-        check("最后一题作答返回 report_id（自动结算）", d.get("report_id") is not None)
-        finished = True
+    if d.get("finished_qa"):
+        # v2 起逐题作答结束不再自动结算，改为进入反问环节（真实面试标配）
+        check("最后一题作答进入反问环节", d.get("phase") == "REVERSE", str(d.get("phase")))
+        qa_done = True
         break
     nq = d.get("next_question")
     check(f"第{answered}题下一题闭卷", nq is None or not nq.get("reference_points"))
-check("答完全部题目（含追问）自动完成", finished, f"answered={answered}")
+check("答完全部题目（含追问）结束逐题阶段", qa_done, f"answered={answered}")
 check("mock 高分触发自适应追问（DEEP→同技能更高难度）", followup_seen)
 
 r = client.get(f"/api/v1/interviews/{iv_id}", headers=H)
@@ -158,6 +159,7 @@ iv_after = r.json()["data"]
 check("追问后总题数增加且等于作答数", iv_after["total_questions"] == answered,
       f"total={iv_after['total_questions']} answered={answered}")
 check("answered_count 真实", iv_after.get("answered_count") == answered)
+check("逐题结束后 phase=REVERSE", iv_after.get("phase") == "REVERSE", str(iv_after.get("phase")))
 seqs = [q["seq"] for q in iv_after["questions"]]
 check("seq 连续无重复", seqs == list(range(1, len(seqs) + 1)), str(seqs))
 db = SessionLocal()
@@ -166,6 +168,28 @@ snap = json.loads(plan.paper_json) if plan and plan.paper_json else {}
 check("卷面快照 followup_count>0", snap.get("followup_count", 0) > 0, str(snap.get("followup_count")))
 db.close()
 
+# ===== 2.5 反问环节 =====
+r = client.get(f"/api/v1/interviews/{iv_id}/reverse", headers=H)
+rev = r.json()["data"]
+check("反问环节初始状态", r.status_code == 200 and rev["phase"] == "REVERSE" and rev["used_count"] == 0,
+      str(rev.get("phase")) + f" used={rev.get('used_count')}")
+r = client.post(f"/api/v1/interviews/{iv_id}/reverse",
+                json={"text": "团队目前最看重候选人的哪项能力？"}, headers=H)
+rev = r.json()["data"]
+check("提交反问返回面试官回答",
+      r.status_code == 200 and rev["used_count"] == 1 and len(rev["questions"][0]["ai_response"]) > 0,
+      str(r.status_code))
+check("反问点评作为报告素材返回", bool(rev["questions"][0].get("evaluation")))
+check("反问剩余额度递减", rev["remaining"] == rev["max_count"] - 1, str(rev.get("remaining")))
+r = client.post(f"/api/v1/interviews/{iv_id}/reverse/skip", headers=H)
+check("跳过反问 → phase=DONE", r.status_code == 200 and r.json()["data"]["phase"] == "DONE",
+      str(r.json().get("data", {}).get("phase")))
+
+# 反问结束后交卷结算
+r = client.post(f"/api/v1/interviews/{iv_id}/finish", headers=H)
+check("反问结束后交卷生成报告", r.status_code == 200 and r.json()["data"].get("report_id"),
+      str(r.status_code) + r.text[:100])
+
 # 结算后操作全部 409（用已作答的首题触发幂等/状态拦截）
 r = answer(iv_id, GOOD_ANS, 30, question_id=qs[0]["id"])
 check("结算后再作答 → 409", r.status_code == 409, str(r.status_code))
@@ -173,13 +197,21 @@ r = client.post(f"/api/v1/interviews/{iv_id}/abort", headers=H)
 check("终态再中止 → 409", r.status_code == 409, str(r.status_code))
 r = client.post(f"/api/v1/interviews/{iv_id}/finish", headers=H)
 check("finish 幂等（返回既有报告）", r.status_code == 200)
+r = client.post(f"/api/v1/interviews/{iv_id}/reverse", json={"text": "结算后再问一条"}, headers=H)
+check("结算后再反问 → 409", r.status_code == 409, str(r.status_code))
 
 # 报告
 r = client.get(f"/api/v1/interviews/{iv_id}/report", headers=H)
 check("获取报告", r.status_code == 200)
-qa = r.json()["data"]["questions_analysis"]
+rep_data = r.json()["data"]
+qa = rep_data["questions_analysis"]
 check("报告逐题数=作答数", len(qa) == answered, f"got={len(qa)}")
 check("报告逐题含参考答案要点", all(len(x.get("reference_points", [])) > 0 for x in qa))
+check("报告含反问环节区块", bool(rep_data.get("reverse_summary")), str(bool(rep_data.get("reverse_summary"))))
+check("报告反问记录含候选人与面试官内容",
+      len(rep_data["reverse_summary"]["questions"]) == 1
+      and bool(rep_data["reverse_summary"]["questions"][0]["candidate_text"])
+      and bool(rep_data["reverse_summary"]["questions"][0]["ai_response"]))
 r = client.get(f"/api/v1/interviews/{iv_id}", headers=H)
 check("结束后可见参考答案（复盘对照）",
       all(q["reference_points"] for q in r.json()["data"]["questions"]))

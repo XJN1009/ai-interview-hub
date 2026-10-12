@@ -6,18 +6,26 @@
         <header class="room-top-bar">
           <div class="top-left">
             <span class="room-job-badge">{{ session.job_title }}</span>
-            <span class="room-seq-indicator">第 {{ session.current_question_seq }} / {{ session.total_questions }} 题</span>
-            <span :class="['room-qtype-pill', qtypeClass(currentQuestion?.question_type)]">
+            <span class="room-seq-indicator">
+              {{ isOpening ? '开场环节' : (isReverse ? '反问环节' : `第 ${session.current_question_seq} / ${session.total_questions} 题`) }}
+            </span>
+            <span
+              v-if="!isOpening && !isReverse"
+              :class="['room-qtype-pill', qtypeClass(currentQuestion?.question_type)]"
+            >
               {{ qtypeLabel(currentQuestion?.question_type) }}
             </span>
           </div>
 
           <div class="top-right-meta">
-            <div :class="['room-timer-pill', 'question-timer', { 'timer-overtime': questionOverTime }]">
+            <div
+              v-if="!isOpening && !isReverse"
+              :class="['room-timer-pill', 'question-timer', { 'timer-overtime': questionOverTime }]"
+            >
               <el-icon><Stopwatch /></el-icon>
               <span>本题用时 <strong>{{ formatTime(questionElapsed) }}</strong> / {{ questionLimitText }}</span>
             </div>
-            <div class="room-timer-pill">
+            <div v-if="!isOpening" class="room-timer-pill">
               <el-icon><Clock /></el-icon>
               <span>剩余 <strong>{{ formatTime(remainingSeconds) }}</strong></span>
             </div>
@@ -27,8 +35,139 @@
           </div>
         </header>
 
+        <!-- 开场环节：固定引导语模板（不调 LLM），点击开始后进入逐题作答 -->
+        <main v-if="isOpening" class="room-main-stage opening-stage">
+          <section class="ai-interviewer-card opening-card">
+            <div class="ai-avatar-section">
+              <div class="ai-avatar-circle">
+                <el-icon :size="30" color="#2563EB"><UserFilled /></el-icon>
+              </div>
+              <div class="ai-meta-info">
+                <span class="ai-chief-title">智面仓AI面试官</span>
+                <span class="ai-status-indicator">
+                  <span class="status-dot-blink"></span>
+                  面试即将开始
+                </span>
+              </div>
+            </div>
+
+            <div class="opening-speech">
+              <h1 class="question-headline">
+                你好，欢迎参加「{{ session.job_title }}」模拟面试
+              </h1>
+              <p class="opening-line">
+                我是本次的 AI 面试官。接下来会围绕岗位要求与你简历中的经历提问，共
+                <strong>{{ session.total_questions }}</strong>
+                题，预计
+                <strong>{{ session.duration_minutes }}</strong>
+                分钟。
+              </p>
+              <p class="opening-line">
+                建议按「背景 — 做法 — 结果」的结构回答；不确定的问题也请说出你的思路，而不是直接空着。
+              </p>
+              <p class="opening-line">
+                过程中你可以随时暂停、跳过或结束面试；结束时若已有作答，会生成一份能力诊断报告。
+              </p>
+            </div>
+
+            <ul class="opening-tips">
+              <li>闭卷作答：面试中不展示参考答案，复盘阶段才能逐题对照要点</li>
+              <li>每题有建议限时，超时会少量扣分但不会归零；主动跳过按 0 分但不产生严厉评语</li>
+              <li>
+                支持语音口述：
+                {{ speechSupported ? '当前浏览器可用，可边想边说' : '当前浏览器不支持，建议改用 Chrome / Edge' }}
+              </li>
+            </ul>
+
+            <div class="opening-actions">
+              <el-button type="primary" size="large" :loading="starting" @click="startFromOpening">
+                准备好了，开始面试
+              </el-button>
+            </div>
+          </section>
+        </main>
+
+        <!-- 反问环节：逐题作答结束后的候选人提问（不计入总分） -->
+        <main v-else-if="isReverse" class="room-main-stage opening-stage">
+          <section class="ai-interviewer-card opening-card">
+            <div class="ai-avatar-section">
+              <div class="ai-avatar-circle">
+                <el-icon :size="30" color="#2563EB"><UserFilled /></el-icon>
+              </div>
+              <div class="ai-meta-info">
+                <span class="ai-chief-title">智面仓AI面试官</span>
+                <span class="ai-status-indicator">
+                  <span class="status-dot-blink"></span>
+                  反问环节
+                </span>
+              </div>
+            </div>
+
+            <div class="opening-speech">
+              <h1 class="question-headline">我的问题问完了，你有什么想问我的吗？</h1>
+              <p class="opening-line">
+                可以问团队、业务、协作方式或成长路径；薪酬福利这类问题我们放到 HR 环节详谈。
+                你最多可以问
+                <strong>{{ reverseState?.max_count || 3 }}</strong>
+                条，也可以直接交卷。
+              </p>
+            </div>
+
+            <div v-if="reverseState?.questions?.length" class="reverse-thread">
+              <div v-for="item in reverseState.questions" :key="item.seq" class="reverse-item">
+                <div class="reverse-ask">
+                  <span class="reverse-role">你</span>
+                  <span class="reverse-text">{{ item.candidate_text }}</span>
+                </div>
+                <div class="reverse-reply">
+                  <span class="reverse-role reply">面试官</span>
+                  <span class="reverse-text">{{ item.ai_response }}</span>
+                </div>
+                <div v-if="item.evaluation?.comment" class="reverse-comment">
+                  {{ item.evaluation.comment }}
+                </div>
+              </div>
+            </div>
+
+            <div class="answer-box">
+              <div class="answer-box-header">
+                <span class="answer-box-title">你想问的问题</span>
+                <span class="word-counter">{{ reverseText.length }} 字</span>
+              </div>
+              <el-input
+                v-model="reverseText"
+                type="textarea"
+                :rows="3"
+                :disabled="!reverseState || reverseState.remaining <= 0"
+                placeholder="例如：团队目前最看重候选人的哪项能力？最近半年遇到的最大挑战是什么？"
+                class="room-textarea"
+              />
+              <div class="submit-action-row">
+                <el-button
+                  size="large"
+                  class="room-skip-btn"
+                  :disabled="reverseSubmitting"
+                  @click="skipReverse"
+                >
+                  跳过反问，直接交卷
+                </el-button>
+                <el-button
+                  type="primary"
+                  size="large"
+                  class="room-submit-btn"
+                  :loading="reverseSubmitting"
+                  :disabled="!reverseState || reverseState.remaining <= 0 || !reverseText.trim()"
+                  @click="submitReverseQuestion"
+                >
+                  {{ reverseState && reverseState.remaining > 0 ? `提交提问（还可问 ${reverseState.remaining} 条）` : '已达提问上限，请交卷' }}
+                </el-button>
+              </div>
+            </div>
+          </section>
+        </main>
+
         <!-- Main Immersive Stage (AI Left, Candidate Right) -->
-        <main class="room-main-stage">
+        <main v-else class="room-main-stage">
           <!-- Left: AI Interviewer & Highlighted Question -->
           <section class="ai-interviewer-card">
             <div class="ai-avatar-section">
@@ -136,8 +275,8 @@
           </section>
         </main>
 
-        <!-- Bottom Hardware & Control Bar -->
-        <footer class="room-bottom-controls">
+        <!-- Bottom Hardware & Control Bar（开场/反问环节隐藏：这两个环节无需作答） -->
+        <footer v-if="!isOpening && !isReverse" class="room-bottom-controls">
           <div class="controls-pill-group">
             <button
               type="button"
@@ -226,6 +365,12 @@ const session = ref<any>(null)
 const currentQuestion = ref<any>(null)
 const answerText = ref('')
 const evaluating = ref(false)
+const starting = ref(false)
+
+// 开场环节：新会话创建后 phase=OPENING，等用户点击「开始面试」再由后端推进为 QA
+const isOpening = computed(() =>
+  session.value?.phase === 'OPENING' && ['READY', 'CREATED'].includes(session.value?.status)
+)
 
 const remainingSeconds = ref(1800)
 const isPaused = ref(false)
@@ -605,13 +750,25 @@ const loadSession = async () => {
   try {
     let res: any = await interviewApi.getInterview(interviewId)
     if (res.status === 'COMPLETED') { router.replace(`/personal/interviews/${interviewId}/report`); return }
-    if (['READY', 'CREATED'].includes(res.status)) {
+    // 开场环节不自动开始：留给用户读完引导语后点击「开始面试」，
+    // 后端会在 start 时把 phase 从 OPENING 推进为 QA。
+    const openingPending = res.phase === 'OPENING' && ['READY', 'CREATED'].includes(res.status)
+    if (!openingPending && ['READY', 'CREATED'].includes(res.status)) {
       await interviewApi.startInterview(interviewId)
       res = await interviewApi.getInterview(interviewId)
     }
     const data = res?.data || res
     isPaused.value = data.status === 'PAUSED'
     session.value = data
+    // 反问环节中途刷新：补拉反问状态，保证问答记录不丢
+    if (data.phase === 'REVERSE') {
+      try {
+        const rs: any = await interviewApi.getReverse(interviewId)
+        reverseState.value = rs?.data || rs
+      } catch (err) {
+        // 静默失败：不影响主流程，用户仍可跳过反问
+      }
+    }
     // 整场剩余时间以服务端 started_at 口径为准（刷新页面不会重置）
     if (typeof data?.remaining_seconds === 'number') {
       remainingSeconds.value = data.remaining_seconds
@@ -633,14 +790,82 @@ const loadSession = async () => {
       ElMessage.warning('本次面试暂无题目，请返回重新创建面试')
     }
     resetQuestionTimer()
-    startTimer()
-    initCamera()
-    restoreDraftIfAny()
+    // 开场阶段不计时、不初始化摄像头（此时入口卡片未渲染），避免无谓的计时与权限请求
+    if (!openingPending) {
+      startTimer()
+      initCamera()
+      restoreDraftIfAny()
+    }
   } catch (err: any) {
     error.value = true
   } finally {
     loading.value = false
   }
+}
+
+// 开场引导结束：开始面试并重新加载会话（此后 phase=QA，进入逐题作答）
+const startFromOpening = async () => {
+  const interviewId = Number(route.params.id)
+  starting.value = true
+  try {
+    await interviewApi.startInterview(interviewId)
+    await loadSession()
+  } catch (err: any) {
+    ElMessage.error('开始面试失败，请稍后重试')
+  } finally {
+    starting.value = false
+  }
+}
+
+// ===== 反问环节（逐题作答结束后进入；问答不计入总分）=====
+const reverseState = ref<any>(null)
+const reverseText = ref('')
+const reverseSubmitting = ref(false)
+const isReverse = computed(() => session.value?.phase === 'REVERSE')
+
+// 逐题作答结束：拉取反问状态并切换界面（整场计时继续，反问不设单题倒计时）
+const enterReverse = async () => {
+  const interviewId = Number(route.params.id)
+  resetTranscription()
+  await loadSession()
+  ElMessage.success('逐题作答已结束，进入反问环节')
+  if (!reverseState.value) {
+    ElMessage.warning('反问环节加载失败，可点击「跳过反问」直接交卷')
+  }
+}
+
+const submitReverseQuestion = async () => {
+  const text = reverseText.value.trim()
+  if (!text) {
+    ElMessage.warning('请先输入你想问的问题')
+    return
+  }
+  const interviewId = Number(route.params.id)
+  reverseSubmitting.value = true
+  try {
+    const res: any = await interviewApi.submitReverse(interviewId, text)
+    reverseState.value = res?.data || res
+    reverseText.value = ''
+    ElMessage.success('已记录你的提问，面试官已回答')
+  } catch (err: any) {
+    ElMessage.error(err?.response?.data?.detail || '提问失败，请稍后重试')
+  } finally {
+    reverseSubmitting.value = false
+  }
+}
+
+// 跳过反问并直接交卷
+const skipReverse = async () => {
+  const interviewId = Number(route.params.id)
+  reverseSubmitting.value = true
+  try {
+    await interviewApi.skipReverse(interviewId)
+  } catch (err) {
+    // 已跳过或状态已变化时不阻塞交卷
+  } finally {
+    reverseSubmitting.value = false
+  }
+  await doFinish()
 }
 
 const handleSkipQuestion = () => {
@@ -664,8 +889,8 @@ const handleSkipQuestion = () => {
       const data = res?.data || res
       ElMessage.info('已跳过本题，继续下一题')
 
-      if (data?.is_finished) {
-        router.push(`/interviews/${interviewId}/report`)
+      if (data?.finished_qa || data?.is_finished) {
+        await enterReverse()
       } else {
         if (typeof data?.total_questions === 'number') {
           session.value.total_questions = data.total_questions
@@ -728,9 +953,9 @@ const submitCurrentAnswer = async () => {
       ElMessage.success('回答提交成功')
     }
 
-    // 服务端判定完成（含追问加题后的真实总题数）
-    if (data?.is_finished) {
-      router.push(`/interviews/${interviewId}/report`)
+    // 逐题作答结束 → 进入反问环节（v2 起不再自动结算）
+    if (data?.finished_qa || data?.is_finished) {
+      await enterReverse()
     } else {
       // 同步追问加题与剩余时间（服务端口径）
       if (typeof data?.total_questions === 'number') {
@@ -1366,5 +1591,109 @@ onUnmounted(() => {
   .room-main-stage {
     grid-template-columns: 1fr;
   }
+}
+
+/* ===== 开场环节（固定引导语模板）===== */
+.opening-stage {
+  grid-template-columns: 1fr;
+  align-items: start;
+}
+
+.opening-card {
+  gap: 18px;
+}
+
+.opening-speech {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.opening-speech .question-headline {
+  margin: 0;
+}
+
+.opening-line {
+  margin: 0;
+  color: #475569;
+  font-size: 15px;
+  line-height: 1.8;
+}
+
+.opening-line strong {
+  color: #1e293b;
+}
+
+.opening-tips {
+  margin: 0;
+  padding: 14px 18px 14px 34px;
+  list-style: disc;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.9;
+}
+
+.opening-actions {
+  display: flex;
+  justify-content: flex-start;
+}
+
+/* ===== 反问环节 ===== */
+.reverse-thread {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.reverse-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.reverse-ask,
+.reverse-reply {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.reverse-role {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #eff6ff;
+  color: #2563eb;
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.reverse-role.reply {
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.reverse-text {
+  font-size: 14px;
+  line-height: 1.8;
+  color: #334155;
+}
+
+.reverse-comment {
+  padding-left: 10px;
+  border-left: 2px solid #cbd5e1;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.7;
 }
 </style>

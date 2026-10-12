@@ -1,4 +1,5 @@
 import json
+import logging
 import random
 from datetime import datetime
 from typing import List, Optional
@@ -18,22 +19,26 @@ from app.models.resume import Resume
 from app.models.question import QuestionBank
 from app.services.paper_builder import (
     build_paper, paper_from_bank_ids, collect_job_skills, allocate_counts, resolve_ratio,
-    PROFESSIONAL, GENERAL, STRESS, Paper
+    order_by_stage, PROFESSIONAL, GENERAL, STRESS, Paper
 )
 from app.services.interview_core import (
     build_jd_text, build_resume_context, load_interview_context,
     build_ai_reference_points, get_remaining_seconds, mark_question_shown,
-    submit_answer_core, finalize_interview, transition_interview
+    submit_answer_core, finalize_interview, transition_interview,
+    get_reverse_state, submit_reverse_question_core, skip_reverse_core
 )
 from app.schemas.common import ResponseModel
 from app.schemas.interview import (
     InterviewCreate, InterviewOut, InterviewQuestionOut,
     InterviewAnswerRequest, AnswerEvaluationOut, InterviewReportOut,
-    PaperPreviewOut, PaperPreviewItem
+    PaperPreviewOut, PaperPreviewItem,
+    ReverseStateOut, ReverseSubmitRequest
 )
 from app.ai.provider import ai_provider
 
 router = APIRouter(tags=["AI 模拟面试与复盘"])
+
+logger = logging.getLogger("interviews")
 
 # 题库为空（未灌库）时的兜底题，保证面试流程不中断。
 # 刻意保持行业中性（不绑定具体技术栈），任何岗位组卷都不跑题。
@@ -51,9 +56,17 @@ FALLBACK_QUESTIONS = [
 ]
 
 
-def next_fallback_question(used_texts: List[str], total: int, seq: int) -> dict:
-    """题库为空时的兜底组卷：优先取未使用过的题目，用尽后按序号生成变体。"""
-    pool = [q for q in FALLBACK_QUESTIONS if q["text"] not in (used_texts or [])]
+def next_fallback_question(used_texts: List[str], total: int, seq: int,
+                           question_type: str = None) -> dict:
+    """题库为空或 AI 出题失败时的兜底组卷：优先取未使用过的题目，用尽后按序号生成变体。
+
+    传入 question_type 时优先取该题型的兜底题，避免补位题与缺失题型的标签串位；
+    该题型兜底题已用尽时退回全量池，保证始终能出题。
+    """
+    available = [q for q in FALLBACK_QUESTIONS if q["text"] not in (used_texts or [])]
+    pool = [q for q in available if q["question_type"] == question_type] if question_type else []
+    if not pool:
+        pool = available
     if pool:
         picked = random.choice(pool)
     else:
@@ -156,6 +169,7 @@ def build_interview_out(interview: Interview) -> InterviewOut:
         mode=interview.mode,
         difficulty=interview.difficulty,
         status=interview.status,
+        phase=interview.phase or "QA",
         current_question_seq=interview.current_question_seq,
         total_questions=interview.total_questions,
         duration_minutes=interview.duration_minutes,
@@ -335,38 +349,66 @@ async def create_interview(req: InterviewCreate, current_user: User = Depends(re
             paper = build_paper(db, job, req.mode, req.difficulty, req.total_questions)
 
     if paper and paper.slots:
-        for slot in paper.slots:
-            db.add(InterviewQuestion(interview_id=interview.id, **slot.to_interview_question_kwargs()))
-        # 题库缺口：按题型走 AI 兜底生成
-        missing_total = sum(paper.missing.values()) if paper.missing else 0
+        # 先在内存收集整卷（题库题 + 缺口补位题），最后统一排布题序后再落库
+        pending: List[InterviewQuestion] = [
+            InterviewQuestion(interview_id=interview.id, **slot.to_interview_question_kwargs())
+            for slot in paper.slots
+        ]
+        # 题库缺口：按缺失的题型逐类走 AI 兜底生成（不再跨岗位借题，题型也不再被写死为专业题）
+        missing_plan: List[str] = []
+        for qtype, need in (paper.missing or {}).items():
+            missing_plan.extend([qtype] * need)
         start_seq = len(paper.slots)
         ai_used_texts = [s.text for s in paper.slots]
-        for i in range(missing_total):
+        ai_generated = fallback_used = 0
+        for i, qtype in enumerate(missing_plan):
+            seq = start_seq + i + 1
             q_data = await ai_provider.generate_question(
-                job_title=job_title, seq=start_seq + i + 1, difficulty=req.difficulty,
+                job_title=job_title, seq=seq, difficulty=req.difficulty,
                 jd_text=jd_text, resume_context=resume_context,
-                used_texts=list(ai_used_texts)
+                question_type=qtype, used_texts=list(ai_used_texts)
             )
-            if q_data.get("question"):
-                ai_used_texts.append(q_data["question"])
-            db.add(InterviewQuestion(
+            text = (q_data.get("question") or "").strip()
+            if text:
+                ai_generated += 1
+            else:
+                # AI 不可用或返回空题干：用兜底题补位，保证卷面题量不缩水（不落空题）
+                fb = next_fallback_question(ai_used_texts, req.total_questions, seq, question_type=qtype)
+                q_data = {**fb, "question": fb["text"]}
+                text = fb["text"]
+                fallback_used += 1
+            ai_used_texts.append(text)
+            pending.append(InterviewQuestion(
                 interview_id=interview.id,
-                seq=start_seq + i + 1,
                 stage=q_data.get("stage") or "专业基础",
-                question_type=PROFESSIONAL,
+                question_type=q_data.get("question_type") or qtype,
                 skill_name=q_data.get("skill_name") or job_title,
-                text=q_data.get("question") or "",
+                text=text,
                 difficulty=q_data.get("difficulty") or req.difficulty,
                 hints=q_data.get("hints"),
-                time_limit_sec=180,
+                # 兜底题自带限时，AI 题沿用其返回限时，缺失时回退 180 秒
+                time_limit_sec=q_data.get("time_limit_sec") or 180,
                 reference_points_json=json.dumps(
-                    build_ai_reference_points(job_title, q_data.get("question") or ""),
-                    ensure_ascii=False
+                    build_ai_reference_points(job_title, text), ensure_ascii=False
                 ),
                 source="AI_GENERATED"
             ))
-        stages = [{"stage": s.stage, "skill_name": s.skill_name, "question_type": s.question_type,
-                   "bank_id": s.bank_id, "seq": s.seq} for s in paper.slots]
+        if missing_plan:
+            logger.info(
+                "interview=%s 组卷来源：题库命中 %s 题，缺口 %s 题（AI 生成 %s / 兜底补位 %s）",
+                interview.id, len(paper.slots), len(missing_plan), ai_generated, fallback_used
+            )
+        # 整卷统一排布题序：阶段位次升序、阶段内随机，补位题因此落在其阶段位置而非卷尾。
+        # 用户已确认考卷（selected_bank_ids）保持确认顺序，不打乱"所见即所考"。
+        if not req.selected_bank_ids:
+            pending = order_by_stage(pending)
+        for idx, q in enumerate(pending, start=1):
+            q.seq = idx
+            db.add(q)
+        # 卷面快照与实际落库题序保持一致（含补位题），便于事后追溯
+        paper.plan["bank_ids"] = [q.bank_id for q in pending if q.bank_id]
+        stages = [{"stage": q.stage, "skill_name": q.skill_name, "question_type": q.question_type,
+                   "bank_id": q.bank_id, "seq": q.seq} for q in pending]
         plan = InterviewPlan(
             interview_id=interview.id,
             stages_json=json.dumps(stages, ensure_ascii=False),
@@ -718,6 +760,7 @@ async def answer_interview_question(id: int, req: InterviewAnswerRequest, curren
 
     return ResponseModel(data=AnswerEvaluationOut(
         provenance=eval_res.get("provenance", {}), version=result["version"], report_state=result.get("report_state", "PENDING"),
+        phase=result.get("phase"), finished_qa=result.get("finished_qa", result["finished"]),
         answer_id=result["answer"].id,
         total_score=eval_res["score"],
         dimensions=eval_res["dimensions"],
@@ -738,6 +781,39 @@ async def answer_interview_question(id: int, req: InterviewAnswerRequest, curren
         is_empty=result.get("is_empty", False),
         is_skipped=result.get("is_skipped", False)
     ))
+
+@router.get("/interviews/{id}/reverse", response_model=ResponseModel[ReverseStateOut])
+def get_interview_reverse(id: int, current_user: User = Depends(require_auth), db: Session = Depends(get_db)):
+    """反问环节状态：已提问列表 + 剩余额度，供面试间渲染反问卡片。"""
+    interview = db.query(Interview).filter_by(id=id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="面试记录不存在")
+    return ResponseModel(data=ReverseStateOut(**get_reverse_state(db, interview, current_user)))
+
+
+@router.post("/interviews/{id}/reverse", response_model=ResponseModel[ReverseStateOut])
+async def submit_interview_reverse(id: int, req: ReverseSubmitRequest,
+                                   current_user: User = Depends(require_auth),
+                                   db: Session = Depends(get_db)):
+    """提交一条反问：AI 面试官以第一人称回答并点评（不计入总分）。"""
+    interview = db.query(Interview).filter_by(id=id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="面试记录不存在")
+    state = await submit_reverse_question_core(db, interview, current_user, req.text)
+    log_operation(db, current_user.id, current_user.email, "PERSONAL", "REVERSE_QUESTION",
+                  "INTERVIEW", id, f"反问环节提问第 {state['used_count']} 条")
+    return ResponseModel(data=ReverseStateOut(**state))
+
+
+@router.post("/interviews/{id}/reverse/skip", response_model=ResponseModel[ReverseStateOut])
+def skip_interview_reverse(id: int, current_user: User = Depends(require_auth), db: Session = Depends(get_db)):
+    """跳过反问环节，之后可直接交卷结算。"""
+    interview = db.query(Interview).filter_by(id=id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="面试记录不存在")
+    state = skip_reverse_core(db, interview, current_user)
+    return ResponseModel(data=ReverseStateOut(**state))
+
 
 @router.post("/interviews/{id}/finish", response_model=ResponseModel[dict])
 async def finish_interview(id: int, current_user: User = Depends(require_auth), db: Session = Depends(get_db)):
@@ -865,5 +941,7 @@ def get_interview_report(id: int, current_user: User = Depends(require_auth), db
         status=report.status,
         created_at=report.created_at,
         questions_analysis=q_analysis,
-        time_analysis=time_analysis
+        time_analysis=time_analysis,
+        # 旧报告无反问汇总时为 None，前端据此隐藏该区块
+        reverse_summary=json.loads(report.reverse_summary_json) if report.reverse_summary_json else None
     ))

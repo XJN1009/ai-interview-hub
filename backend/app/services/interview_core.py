@@ -25,7 +25,8 @@ from app.services.learning import generate_and_store_learning_plan, resolve_targ
 from app.ai.provider import ai_provider
 from app.core import state_machine
 from app.models.interview import (
-    Interview, InterviewAnswer, InterviewQuestion, AnswerEvaluation, InterviewReport
+    Interview, InterviewAnswer, InterviewQuestion, AnswerEvaluation, InterviewReport,
+    InterviewReverseQuestion
 )
 from app.models.job import Job
 from app.models.profile import CompetencyHistory, UserCompetency
@@ -37,6 +38,9 @@ logger = logging.getLogger("interview_service")
 
 # 允许追问插入的次数上限（每场面试）
 MAX_FOLLOWUP_INSERTS = 2
+
+# 反问环节：候选人最多可提的反问条数
+MAX_REVERSE_QUESTIONS = 3
 
 DIFF_ORDER = ["EASY", "MEDIUM", "HARD"]
 
@@ -301,6 +305,10 @@ def transition_interview(db, interview, action):
         values.update(status="CANCELLED", ended_at=now)
     else:
         values.update(status="IN_PROGRESS")
+        # 开场环节：用户点击「开始面试」后进入逐题作答，环节标记随之推进。
+        # 只在仍处于 OPENING 时推进，避免从 PAUSED 恢复时把反问环节打回 QA。
+        if (interview.phase or "QA") == "OPENING":
+            values["phase"] = "QA"
         if interview.status == "PAUSED" and interview.paused_at:
             gap = now - interview.paused_at
             values.update(paused_at=None)
@@ -445,9 +453,10 @@ async def submit_answer_core(db: Session, interview: Interview, user: User, text
         db.flush()
         finished = next_q is None
         if finished:
-            interview.status, interview.ended_at = "COMPLETED", datetime.utcnow()
+            # 逐题作答结束：不再直接结算，改为进入反问环节（真实面试标配），
+            # 由用户「跳过反问」或「交卷」收尾；status 仍为 IN_PROGRESS，故状态机行为不变。
+            interview.phase = "REVERSE"
             interview.current_question_shown_at = None
-            interview.report_state = "PENDING"
         else:
             interview.current_question_seq = next_q.seq
             mark_question_shown(interview)
@@ -458,7 +467,9 @@ async def submit_answer_core(db: Session, interview: Interview, user: User, text
                   "report_state": interview.report_state, "version": interview.version,
                   "total_questions": interview.total_questions, "raw_score": raw_score,
                   "overtime": answer.overtime, "overtime_sec": answer.overtime_sec,
-                  "is_empty": is_empty, "is_skipped": skipped, "remaining_seconds": get_remaining_seconds(interview)}
+                  "is_empty": is_empty, "is_skipped": skipped, "remaining_seconds": get_remaining_seconds(interview),
+                  # 逐题作答结束即进入反问环节，前端据此切换到反问卡片
+                  "phase": interview.phase, "finished_qa": finished}
         answer.processing_state = "COMPLETED"
         answer.result_json = json.dumps(result, ensure_ascii=False)
         db.commit()  # 评分、追问、推进和幂等响应一次提交。
@@ -470,17 +481,93 @@ async def submit_answer_core(db: Session, interview: Interview, user: User, text
             db.query(InterviewAnswer).filter_by(id=answer.id, processing_state="PROCESSING").update({"processing_state": "FAILED"})
         db.commit()
         raise
-    if finished:
-        try:
-            report = await finalize_interview(db, interview, user)
-            result["report_id"] = report.id
-        except Exception:
-            logger.exception("报告生成失败，保留已提交作答，等待重试")
-        db.refresh(interview)
-        result["report_state"] = interview.report_state
-        answer.result_json = json.dumps(result, ensure_ascii=False)
-        db.commit()
     return _replay(db, answer)
+
+
+def _reverse_state(interview: Interview, db: Session) -> Dict[str, Any]:
+    """反问环节当前状态（供 GET 与提交后回显共用）。"""
+    rows = (db.query(InterviewReverseQuestion)
+            .filter_by(interview_id=interview.id).order_by(InterviewReverseQuestion.seq).all())
+    questions = []
+    for r in rows:
+        try:
+            evaluation = json.loads(r.evaluation_json) if r.evaluation_json else {}
+        except Exception:
+            evaluation = {}
+        questions.append({
+            "seq": r.seq, "candidate_text": r.candidate_text,
+            "ai_response": r.ai_response, "evaluation": evaluation,
+        })
+    return {
+        "phase": interview.phase or "QA",
+        "max_count": MAX_REVERSE_QUESTIONS,
+        "used_count": len(rows),
+        "remaining": max(0, MAX_REVERSE_QUESTIONS - len(rows)),
+        "questions": questions,
+    }
+
+
+def get_reverse_state(db: Session, interview: Interview, user: User) -> Dict[str, Any]:
+    if interview.user_id != user.id:
+        raise HTTPException(403, "无权查看此面试的反问记录")
+    return _reverse_state(interview, db)
+
+
+async def submit_reverse_question_core(db: Session, interview: Interview, user: User,
+                                      text: str) -> Dict[str, Any]:
+    """提交一条反问：AI 面试官以第一人称回答并给出过程性点评（不计入总分）。"""
+    if interview.user_id != user.id:
+        raise HTTPException(403, "无权在此面试中提问")
+    db.refresh(interview)
+    if (interview.phase or "QA") != "REVERSE":
+        raise HTTPException(409, "当前不在反问环节，无法提交提问")
+    content = (text or "").strip()
+    if not content:
+        raise HTTPException(422, "提问内容不能为空")
+    existing = db.query(InterviewReverseQuestion).filter_by(interview_id=interview.id).count()
+    if existing >= MAX_REVERSE_QUESTIONS:
+        raise HTTPException(422, f"反问最多 {MAX_REVERSE_QUESTIONS} 条，请直接交卷或跳过")
+
+    jd_text, _ = load_interview_context(interview, db)
+    # 用本场问答摘要作为上下文，让回答贴合刚刚聊过的内容
+    questions = (db.query(InterviewQuestion).filter_by(interview_id=interview.id)
+                 .order_by(InterviewQuestion.seq).all())
+    qa_summary = "\n".join(
+        f"Q{q.seq}: {q.text}\nA: {(q.answer.text or '')[:200]}"
+        for q in questions if q.answer
+    )[:1500]
+    job_title = interview.job.title if interview.job else "综合岗位"
+
+    with ai_context(user.id, interview.id, f"reverse-{interview.id}-{existing + 1}"):
+        result = await ai_provider.answer_reverse_question(
+            job_title=job_title, question=content,
+            jd_text=jd_text or None, qa_summary=qa_summary or None
+        )
+    answer_text = (result.get("answer") or "").strip()
+    if not answer_text:
+        raise HTTPException(503, "面试官回答生成失败，请稍后重试")
+
+    row = InterviewReverseQuestion(
+        interview_id=interview.id, seq=existing + 1, candidate_text=content,
+        ai_response=answer_text,
+        evaluation_json=json.dumps(result.get("evaluation") or {}, ensure_ascii=False),
+    )
+    db.add(row)
+    db.commit()
+    logger.info("interview=%s 反问第 %s 条已记录", interview.id, row.seq)
+    return _reverse_state(interview, db)
+
+
+def skip_reverse_core(db: Session, interview: Interview, user: User) -> Dict[str, Any]:
+    """跳过反问环节，允许直接结算。"""
+    if interview.user_id != user.id:
+        raise HTTPException(403, "无权操作此面试")
+    db.refresh(interview)
+    if (interview.phase or "QA") != "REVERSE":
+        raise HTTPException(409, "当前不在反问环节")
+    interview.phase = "DONE"
+    db.commit()
+    return _reverse_state(interview, db)
 
 
 def aggregate_scores(questions):
@@ -546,13 +633,27 @@ async def finalize_interview(db: Session, interview: Interview, user: User, forc
                 {"processing_started_at": datetime.utcnow()}, synchronize_session=False)
             if not locked:
                 raise HTTPException(409, "报告处理租约已变化，请重试")
+            # 反问环节汇总：进报告素材，不进总分（避免变相惩罚内向型候选人）
+            reverse_state = _reverse_state(interview, db)
+            reverse_summary = {
+                "questions": reverse_state["questions"],
+                "answered_count": reverse_state["used_count"],
+                "skipped": reverse_state["used_count"] == 0,
+                "comment": (
+                    "反问环节表现良好：提问聚焦岗位与团队的真实情况，具备信息增量。"
+                    if reverse_state["used_count"] else
+                    "本次未使用反问环节。真实面试中反问是展示你对岗位动机与思考深度的窗口，"
+                    "建议准备 2~3 个与业务、团队或成长相关的问题。"
+                ),
+            }
             rep = InterviewReport(interview_id=interview.id, user_id=user.id, total_score=total,
                 performance_level="优秀" if total >= 85 else "表现良好" if total >= 70 else "待提升",
                 dimension_scores_json=json.dumps(dimensions, ensure_ascii=False),
                 strengths_json=json.dumps(report_data["strengths"], ensure_ascii=False),
                 weaknesses_json=json.dumps(report_data["weaknesses"], ensure_ascii=False),
                 suggestions_json=json.dumps(report_data["suggestions"], ensure_ascii=False), summary=report_data["summary"],
-                provenance_json=json.dumps(provenance, ensure_ascii=False), status="COMPLETED")
+                provenance_json=json.dumps(provenance, ensure_ascii=False),
+                reverse_summary_json=json.dumps(reverse_summary, ensure_ascii=False), status="COMPLETED")
             db.add(rep)
             for skill, evidence in by_skill.items():
                 weight = sum(w for _, _, w in evidence)
@@ -569,6 +670,8 @@ async def finalize_interview(db: Session, interview: Interview, user: User, forc
                 comp.score, comp.confidence = score, round(min(.95, len(evidence) / 5), 2)
             db.refresh(interview)
             interview.status, interview.report_state = "COMPLETED", "COMPLETED"
+            # 结算即环节收尾：反问未走完（提前交卷）时也标记为 DONE，避免留下悬挂状态
+            interview.phase = "DONE"
             interview.ended_at = interview.ended_at or datetime.utcnow()
             interview.version += 1
             db.commit()

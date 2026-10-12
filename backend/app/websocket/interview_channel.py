@@ -58,11 +58,14 @@ async def handle_interview_websocket(websocket: WebSocket, interview_id: int):
                                                          req.question_id, req.request_id, req.expected_version)
                         await websocket.send_json({"type": "evaluation", "answer_id": result["answer"].id,
                             "total_score": result["eval_res"]["score"], **result["eval_res"],
-                            "version": result["version"], "is_finished": result["finished"]})
+                            "version": result["version"], "is_finished": result["finished"],
+                            "phase": result.get("phase"), "finished_qa": result.get("finished_qa")})
                         if result["next_question"]:
                             await websocket.send_json({"type": "next_question", **build_question_payload(result["next_question"])})
                         if result["finished"]:
-                            await websocket.send_json({"type": "finished", "report_id": result["report_id"],
+                            # 逐题作答结束 → 进入反问环节（反问问答走 REST 端点），此处不再直接结算
+                            await websocket.send_json({"type": "qa_finished", "phase": result.get("phase"),
+                                                       "report_id": result["report_id"],
                                                        "report_state": result["report_state"]})
                     elif event in ("start", "pause", "resume", "abort"):
                         transition_interview(db, interview, event)
