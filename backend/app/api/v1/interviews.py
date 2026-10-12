@@ -12,7 +12,7 @@ from app.models.user import User
 from app.models.job import Job
 from app.models.interview import (
     Interview, InterviewPlan, InterviewQuestion, InterviewAnswer,
-    AnswerEvaluation, InterviewReport
+    AnswerEvaluation, InterviewReport, InterviewReverseQA
 )
 from app.models.resume import Resume
 from app.models.question import QuestionBank
@@ -29,7 +29,7 @@ from app.schemas.common import ResponseModel
 from app.schemas.interview import (
     InterviewCreate, InterviewOut, InterviewQuestionOut,
     InterviewAnswerRequest, AnswerEvaluationOut, InterviewReportOut,
-    PaperPreviewOut, PaperPreviewItem
+    PaperPreviewOut, PaperPreviewItem, ReverseQuestionRequest, ReverseQAOut
 )
 from app.ai.provider import ai_provider
 
@@ -142,6 +142,21 @@ def build_interview_out(interview: Interview) -> InterviewOut:
     if interview.job:
         job_title = interview.job.title
 
+    answered_count = sum(1 for q in interview.questions if q.answer and q.answer.evaluation)
+
+    # 反问环节历史：按提问时间升序回放
+    reverse_qa = [
+        ReverseQAOut(
+            id=rq.id,
+            question=rq.question,
+            answer=rq.answer,
+            created_at=rq.created_at,
+            remaining_seconds=None,
+            answered_count=answered_count,
+        )
+        for rq in sorted(interview.reverse_qa, key=lambda x: x.created_at)
+    ]
+
     return InterviewOut(
         id=interview.id,
         user_id=interview.user_id,
@@ -160,9 +175,10 @@ def build_interview_out(interview: Interview) -> InterviewOut:
         ended_at=interview.ended_at,
         created_at=interview.created_at,
         remaining_seconds=get_remaining_seconds(interview),
-        answered_count=sum(1 for q in interview.questions if q.answer and q.answer.evaluation),
+        answered_count=answered_count,
         questions=q_outs,
-        current_question=curr_q_out
+        current_question=curr_q_out,
+        reverse_qa=reverse_qa
     )
 
 
@@ -749,6 +765,61 @@ async def finish_interview(id: int, current_user: User = Depends(require_auth), 
         "total_score": rep.total_score,
         "report_url": f"/personal/interviews/{id}/report"
     })
+
+
+@router.post("/interviews/{id}/reverse-question", response_model=ResponseModel[ReverseQAOut])
+async def ask_reverse_question(id: int, req: ReverseQuestionRequest,
+                               current_user: User = Depends(require_auth), db: Session = Depends(get_db)):
+    """反问环节：求职者向 AI 面试官提问，AI 生成回答并归档到该面试下。
+
+    仅在本人（或企业侧授权场景）可提问；个人训练面试仅本人可操作。
+    """
+    interview = db.query(Interview).filter(Interview.id == id).first()
+    if not interview:
+        raise HTTPException(status_code=404, detail="面试不存在")
+
+    # SEC-06: 私人训练面试默认仅本人可提问
+    if interview.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="【SEC-06 越权防护】无权向该面试发起反问")
+
+    job_title = interview.job.title if interview.job else "Java后端开发工程师"
+    resume = db.query(Resume).filter(
+        Resume.user_id == current_user.id,
+        Resume.is_deleted == False  # noqa: E712
+    ).order_by(Resume.is_default.desc(), Resume.id.desc()).first()
+    resume_context = build_resume_context(resume)
+
+    answer_data = await ai_provider.answer_reverse_question(
+        question=req.question,
+        job_title=job_title,
+        resume_context=resume_context
+    )
+    answer_text = (answer_data.get("answer") or "").strip()
+    if not answer_text:
+        raise HTTPException(status_code=502, detail="AI 反问回答生成失败，请稍后重试")
+
+    record = InterviewReverseQA(
+        interview_id=interview.id,
+        user_id=current_user.id,
+        question=req.question.strip(),
+        answer=answer_text,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+
+    log_operation(db, current_user.id, current_user.email, "PERSONAL", "ASK_REVERSE_QUESTION",
+                  "INTERVIEW", interview.id, f"反问环节提问：{req.question.strip()[:40]}")
+
+    return ResponseModel(data=ReverseQAOut(
+        id=record.id,
+        question=record.question,
+        answer=record.answer,
+        created_at=record.created_at,
+        remaining_seconds=get_remaining_seconds(interview),
+        answered_count=sum(1 for q in interview.questions if q.answer and q.answer.evaluation),
+    ))
+
 
 @router.get("/interviews/{id}/report", response_model=ResponseModel[InterviewReportOut])
 def get_interview_report(id: int, current_user: User = Depends(require_auth), db: Session = Depends(get_db)):

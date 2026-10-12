@@ -101,6 +101,7 @@ export interface InterviewQuestionView {
   evaluation?: any
 }
 
+// 反问记录条目：求职者在面试中向 AI 面试官提出的问题及 AI 的回答
 export interface ReverseQAItem {
   id: number
   question: string
@@ -129,6 +130,11 @@ export interface ReverseQAResponse {
   created_at: string
   remaining_seconds: number | null
   answered_count: number
+}
+
+// 反问请求：求职者向 AI 面试官发起的一个问题
+export interface ReverseQuestionRequest {
+  question: string
 }
 
 export interface InterviewSession {

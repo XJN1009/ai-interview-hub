@@ -75,3 +75,7 @@ class ResumeRewriteSchema(BaseModel):
     skills: List[Dict[str, Any]] = []
     work_experience: List[Dict[str, Any]] = []
     changes: List[str] = []
+
+class ReverseAnswerSchema(BaseModel):
+    """反问环节：AI 面试官对求职者提问的回答（以中文为主、场景化、可执行）"""
+    answer: str

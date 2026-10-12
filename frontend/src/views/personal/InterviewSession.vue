@@ -185,8 +185,16 @@
             </button>
           </div>
 
-          <!-- Drawer Toggle Button for Live Assistant (Default Folded) -->
+          <!-- Drawer Toggle Buttons: Live Assistant + Reverse QA (Default Folded) -->
           <div class="assistant-drawer-toggle">
+            <el-button
+              size="small"
+              class="drawer-btn"
+              @click="showReverse = !showReverse"
+            >
+              <el-icon><ChatLineRound /></el-icon>
+              <span>{{ showReverse ? '收起反问' : '反问 AI 面试官' }}</span>
+            </el-button>
             <el-button
               size="small"
               class="drawer-btn"
@@ -197,6 +205,63 @@
             </el-button>
           </div>
         </footer>
+
+        <!-- Reverse QA Drawer: Ask the AI interviewer -->
+        <transition name="drawer-slide">
+          <aside v-if="showReverse" class="live-assist-sidebar reverse-qa-sidebar">
+            <div class="assist-drawer-header">
+              <span class="drawer-title">
+                <el-icon color="#3B82F6"><ChatLineRound /></el-icon>
+                反问 AI 面试官
+              </span>
+              <el-button link @click="showReverse = false">
+                <el-icon><Close /></el-icon>
+              </el-button>
+            </div>
+
+            <div class="reverse-qa-body">
+              <p class="reverse-qa-tip">有什么想了解的（岗位、团队、成长、薪资等），可以直接问面试官。</p>
+
+              <div class="reverse-qa-input-row">
+                <el-input
+                  v-model="reverseQuestionText"
+                  type="textarea"
+                  :rows="3"
+                  maxlength="500"
+                  show-word-limit
+                  placeholder="例：请问这个岗位的晋升通道和团队氛围是怎样的？"
+                  class="room-textarea"
+                />
+                <el-button
+                  type="primary"
+                  size="small"
+                  class="reverse-ask-btn"
+                  :loading="reverseAsking"
+                  :disabled="!reverseQuestionText.trim()"
+                  @click="askReverseQuestion"
+                >
+                  提问
+                </el-button>
+              </div>
+
+              <!-- Reverse Q&A History -->
+              <div v-if="reverseQuestions.length" class="reverse-qa-history">
+                <div class="reverse-qa-title">反问记录 ({{ reverseQuestions.length }})</div>
+                <div v-for="item in reverseQuestions" :key="item.id" class="reverse-qa-item">
+                  <div class="rqa-q">
+                    <el-icon color="#60A5FA"><QuestionFilled /></el-icon>
+                    <span>{{ item.question }}</span>
+                  </div>
+                  <div class="rqa-a">
+                    <el-icon color="#10B981"><ChatDotRound /></el-icon>
+                    <span>{{ item.answer }}</span>
+                  </div>
+                </div>
+              </div>
+              <el-empty v-else description="还没有反问记录" :image-size="64" />
+            </div>
+          </aside>
+        </transition>
 
         <!-- Foldable Real-time Assistant Drawer -->
         <transition name="drawer-slide">
@@ -244,7 +309,8 @@ import StateContainer from '@/components/StateContainer.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Clock, UserFilled, VideoCamera, Microphone, VideoPause, VideoPlay,
-  RefreshRight, Cpu, Close, InfoFilled, Stopwatch
+  RefreshRight, Cpu, Close, InfoFilled, Stopwatch,
+  ChatLineRound, QuestionFilled, ChatDotRound
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -392,6 +458,47 @@ const handleReplayQuestion = () => {
 
 const showAssist = ref(false) // Default folded per spec
 
+/* ---------- 反问 AI 面试官（Reverse QA） ---------- */
+const showReverse = ref(false)
+const reverseQuestionText = ref('')
+const reverseAsking = ref(false)
+const reverseQuestions = ref<any[]>([])
+
+const loadReverseHistory = () => {
+  reverseQuestions.value = session.value?.reverse_qa || []
+}
+
+const askReverseQuestion = async () => {
+  const text = reverseQuestionText.value.trim()
+  if (!text) {
+    ElMessage.warning('请输入你想向面试官了解的问题')
+    return
+  }
+  reverseAsking.value = true
+  const interviewId = Number(route.params.id)
+  try {
+    const res: any = await interviewApi.askReverseQuestion(interviewId, { question: text })
+    const data = res?.data || res
+    ElMessage.success('面试官已作答，反问记录已归档')
+    reverseQuestionText.value = ''
+    // 追加新问答到历史（后端起一次反问）
+    reverseQuestions.value.push({
+      id: data.id,
+      question: data.question,
+      answer: data.answer,
+      created_at: data.created_at
+    })
+    // 同步整场剩余时间（服务端口径）
+    if (typeof data?.remaining_seconds === 'number') {
+      remainingSeconds.value = data.remaining_seconds
+    }
+  } catch (err: any) {
+    ElMessage.error(err.message || '反问失败，请稍后重试')
+  } finally {
+    reverseAsking.value = false
+  }
+}
+
 const currentStage = computed(() => {
   return currentQuestion.value?.stage || '综合考察阶段'
 })
@@ -479,6 +586,7 @@ const loadSession = async () => {
     resetQuestionTimer()
     startTimer()
     initCamera()
+    loadReverseHistory()
   } catch (err: any) {
     error.value = true
   } finally {
@@ -1167,6 +1275,83 @@ onUnmounted(() => {
 .drawer-slide-enter-from, .drawer-slide-leave-to {
   transform: translateX(20px);
   opacity: 0;
+}
+
+/* Reverse QA Drawer */
+.reverse-qa-sidebar {
+  width: 380px;
+}
+
+.reverse-qa-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.reverse-qa-tip {
+  font-size: 12px;
+  color: #94A3B8;
+  margin: 0;
+}
+
+.reverse-qa-input-row {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.reverse-ask-btn {
+  align-self: flex-end;
+  border-radius: 6px !important;
+}
+
+.reverse-qa-history {
+  border-top: 1px solid #1F2937;
+  padding-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.reverse-qa-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #9CA3AF;
+}
+
+.reverse-qa-item {
+  background: #0F172A;
+  border: 1px solid #1E293B;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rqa-q, .rqa-a {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.rqa-q {
+  color: #E2E8F0;
+  font-weight: 600;
+}
+
+.rqa-a {
+  color: #CBD5E1;
+}
+
+.rqa-q .el-icon, .rqa-a .el-icon {
+  margin-top: 3px;
+  flex-shrink: 0;
 }
 
 @media (max-width: 1024px) {

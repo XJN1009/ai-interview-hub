@@ -1,5 +1,5 @@
 import client from './client'
-import type { UserInfo, JobItem, ResumeItem, ApplicationItem, InterviewSession, InterviewReportData, PaperPreview, HistoryComparison, WeakQuestionsResult, QuestionBankListResult, ReverseQAResponse } from '@/types'
+import type { UserInfo, JobItem, ResumeItem, ApplicationItem, InterviewSession, InterviewReportData, PaperPreview, HistoryComparison, WeakQuestionsResult, QuestionBankListResult, ReverseQAResponse, ReverseQuestionRequest } from '@/types'
 
 export const authApi = {
   login: (data: any) => client.post('/auth/login', data),
@@ -83,7 +83,8 @@ export const interviewApi = {
   pauseInterview: (id: number) => client.post(`/interviews/${id}/pause`),
   resumeInterview: (id: number) => client.post(`/interviews/${id}/resume`),
   answerQuestion: (id: number, data: any) => client.post(`/interviews/${id}/answer`, data),
-  askReverseQuestion: (id: number, data: { question: string }) =>
+  // 反问环节：求职者向 AI 面试官提问，AI 生成回答并归档到该面试下
+  askReverseQuestion: (id: number, data: ReverseQuestionRequest) =>
     client.post<any, ReverseQAResponse>(`/interviews/${id}/reverse-question`, data),
   finishInterview: (id: number) => client.post(`/interviews/${id}/finish`),
   getReport: (id: number) => client.get<any, InterviewReportData>(`/interviews/${id}/report`),

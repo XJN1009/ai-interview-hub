@@ -12,7 +12,8 @@ from app.models.application import (
 )
 from app.models.interview import (
     Interview, InterviewPlan, InterviewQuestion, InterviewAnswer,
-    AnswerEvaluation, InterviewReport, InterviewInvitation, RecruiterEvaluation
+    AnswerEvaluation, InterviewReport, InterviewInvitation, RecruiterEvaluation,
+    InterviewReverseQA
 )
 from app.models.learning import LearningPlan, LearningTask
 from app.models.question import QuestionBank
@@ -30,6 +31,7 @@ __all__ = [
     "Application", "ApplicationStatusHistory", "CandidatePipelineRecord", "CandidateTag",
     "Interview", "InterviewPlan", "InterviewQuestion", "InterviewAnswer",
     "AnswerEvaluation", "InterviewReport", "InterviewInvitation", "RecruiterEvaluation",
+    "InterviewReverseQA",
     "LearningPlan", "LearningTask",
     "Notification", "FileRecord", "ConsentRecord", "Complaint", "OperationLog", "AICallLog", "SystemSetting"
 ]

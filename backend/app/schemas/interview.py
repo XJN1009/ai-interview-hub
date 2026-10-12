@@ -1,5 +1,5 @@
 from typing import Optional, List, Dict, Any
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 
 class InterviewCreate(BaseModel):
@@ -56,6 +56,19 @@ class PaperPreviewOut(BaseModel):
     bank_available: int
     questions: List[PaperPreviewItem] = []
 
+class ReverseQuestionRequest(BaseModel):
+    """反问环节请求：求职者向 AI 面试官提出的一个问题"""
+    question: str = Field(..., min_length=2, max_length=500)
+
+class ReverseQAOut(BaseModel):
+    """反问记录输出：一次反问问答及其在面试中的剩余时间快照"""
+    id: int
+    question: str
+    answer: str
+    created_at: datetime
+    remaining_seconds: Optional[int] = None  # 提问时刻的整场剩余秒数（服务端口径）
+    answered_count: int = 0                  # 当前已完成评分题数
+
 class InterviewOut(BaseModel):
     id: int
     user_id: int
@@ -77,6 +90,7 @@ class InterviewOut(BaseModel):
     answered_count: int = 0                  # 已评分题数
     questions: List[InterviewQuestionOut] = []
     current_question: Optional[InterviewQuestionOut] = None
+    reverse_qa: List[ReverseQAOut] = []      # 反问环节历史（求职者向 AI 面试官提出的问题与回答）
 
 class InterviewAnswerRequest(BaseModel):
     text: str

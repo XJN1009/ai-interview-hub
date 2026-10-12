@@ -6,12 +6,14 @@ import httpx
 from app.ai.schemas import (
     ResumeParseSchema, JDParseSchema, QuestionGenSchema,
     AnswerEvalSchema, ReportGenSchema, LearningPlanSchema,
-    MatchExplainerSchema, ResumeOptimizeSchema, ResumeRewriteSchema
+    MatchExplainerSchema, ResumeOptimizeSchema, ResumeRewriteSchema,
+    ReverseAnswerSchema
 )
 from app.ai.mock_data import (
     MOCK_RESUME_PARSED, MOCK_JD_PARSED, INTERVIEW_QUESTION_POOL,
     generate_mock_evaluation, generate_adaptive_mock_question,
-    generate_mock_report, generate_mock_learning_tasks
+    generate_mock_report, generate_mock_learning_tasks,
+    generate_mock_reverse_answer
 )
 
 logger = logging.getLogger("ai_provider")
@@ -310,6 +312,30 @@ class AIProvider:
             "explanation": f"候选人与【{job_title}】匹配度为 {score}%。熟练掌握核心技能 {', '.join(adv or ['Java'])}，但在 {', '.join(missing or ['分布式'])} 方面仍有深度拓展空间。"
         }
         validated = MatchExplainerSchema(**data)
+        return validated.model_dump()
+
+    async def answer_reverse_question(
+        self, question: str, job_title: str = None, resume_context: str = None
+    ) -> Dict[str, Any]:
+        """反问环节：AI 面试官回答求职者的提问。
+
+        结合目标岗位 JD 与候选人简历背景作答，真实模型不可用时回退到按主题兜底的 Mock 引擎。
+        """
+        prompt = (
+            "You are an experienced and candid interviewer at the company, answering a candidate's "
+            "question during the reverse (ask-the-interviewer) phase of the interview.\n"
+            f"Target role: {job_title or '技术岗位'}\n"
+            f"=== Candidate Resume ===\n{(resume_context or 'N/A')[:1500]}\n\n"
+            f"Candidate question: {question}\n\n"
+            "Answer honestly, specifically and pragmatically in Simplified Chinese. Give concrete, "
+            "actionable advice a candidate can act on. Output JSON with a single key: answer (a string)."
+        )
+        real_res = await self._call_llm_json(prompt, ReverseAnswerSchema)
+        if real_res:
+            return real_res
+
+        mock_answer = generate_mock_reverse_answer(question)
+        validated = ReverseAnswerSchema(answer=mock_answer)
         return validated.model_dump()
 
 ai_provider = AIProvider()

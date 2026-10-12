@@ -38,6 +38,7 @@ class Interview(Base):
     questions = relationship("InterviewQuestion", back_populates="interview", cascade="all, delete-orphan")
     report = relationship("InterviewReport", back_populates="interview", uselist=False, cascade="all, delete-orphan")
     recruiter_evaluation = relationship("RecruiterEvaluation", back_populates="interview", uselist=False, cascade="all, delete-orphan")
+    reverse_qa = relationship("InterviewReverseQA", back_populates="interview", cascade="all, delete-orphan")
 
 class InterviewPlan(Base):
     __tablename__ = "interview_plans"
@@ -162,3 +163,21 @@ class RecruiterEvaluation(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     interview = relationship("Interview", back_populates="recruiter_evaluation")
+
+
+class InterviewReverseQA(Base):
+    """反问环节记录：求职者在面试中向 AI 面试官提出的问题及 AI 的回答。
+
+    一条记录 = 一次反问问答。同一面试可积累多条，按创建时间升序回放；
+    归属面试（interview_id）与提问人（user_id），便于权限校验与历史查询。
+    """
+    __tablename__ = "interview_reverse_qa"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    interview_id = Column(Integer, ForeignKey("interviews.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    question = Column(Text, nullable=False)
+    answer = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    interview = relationship("Interview", back_populates="reverse_qa")
