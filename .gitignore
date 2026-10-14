@@ -70,3 +70,5 @@ pnpm-debug.log*
 Thumbs.db
 Desktop.ini
 
+# Project files
+docs/submission/
