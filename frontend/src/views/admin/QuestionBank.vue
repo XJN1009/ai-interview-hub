@@ -3,7 +3,7 @@
     <div class="page-head">
       <div>
         <h2 class="page-title">结构化题库管理</h2>
-        <p class="page-sub">面试组卷引擎的数据源。编辑或停用题目仅影响之后的组卷，<strong>历史面试卷面已快照固化，不会变化</strong>；题目只支持停用、不支持物理删除（被历史卷面与错题清单引用）。</p>
+        <p class="page-sub">面试组卷引擎的数据源。<strong>只有「已放行」的题目参与组卷</strong>，新批次默认待审；编辑或停用题目仅影响之后的组卷，<strong>历史面试卷面已快照固化，不会变化</strong>；题目只支持停用、不支持物理删除（被历史卷面与错题清单引用）。</p>
       </div>
       <el-button type="primary" @click="openCreate">+ 新增题目</el-button>
     </div>
@@ -12,6 +12,13 @@
     <div class="stat-row" v-if="stats">
       <div class="stat-card"><span class="v">{{ stats.total }}</span><span class="k">题库总量</span></div>
       <div class="stat-card"><span class="v">{{ stats.enabled }}</span><span class="k">启用中</span></div>
+      <div class="stat-card stat-clickable" :class="{ 'stat-warn': stats.pending > 0 }"
+           @click="pickReview('PENDING')">
+        <span class="v">{{ stats.pending }}</span><span class="k">待审核</span>
+      </div>
+      <div class="stat-card stat-clickable" @click="pickReview('REJECTED')">
+        <span class="v">{{ stats.rejected }}</span><span class="k">已驳回</span>
+      </div>
       <div class="stat-card"><span class="v">{{ stats.by_type.PROFESSIONAL || 0 }}</span><span class="k">专业题</span></div>
       <div class="stat-card"><span class="v">{{ stats.by_type.GENERAL || 0 }}</span><span class="k">通用题</span></div>
       <div class="stat-card"><span class="v">{{ stats.by_type.STRESS || 0 }}</span><span class="k">压力题</span></div>
@@ -37,8 +44,44 @@
         <el-option label="启用中" :value="true" />
         <el-option label="已停用" :value="false" />
       </el-select>
+      <el-select v-model="filters.review_status" placeholder="审核状态" clearable style="width: 130px" @change="reload(1)">
+        <el-option label="待审核" value="PENDING" />
+        <el-option label="已放行" value="APPROVED" />
+        <el-option label="已驳回" value="REJECTED" />
+      </el-select>
+      <el-select v-model="filters.batch" placeholder="灌库批次" clearable style="width: 140px" @change="reload(1)">
+        <el-option v-for="b in batches" :key="b" :label="b" :value="b" />
+      </el-select>
       <el-button @click="reload(1)">查询</el-button>
       <el-button link type="primary" @click="resetFilters">重置</el-button>
+    </div>
+
+    <!-- 按批次审核（D5：分批放行，把 179 题的审核窗口压短） -->
+    <div class="batch-panel zh-card" v-if="batchList.length">
+      <div class="batch-head">
+        <strong>按批次审核</strong>
+        <span class="batch-tip">组卷只取「已放行」的题目；新批次默认待审，逐批确认后再入卷。</span>
+      </div>
+      <div class="batch-rows">
+        <div v-for="b in batchList" :key="b.name" class="batch-row">
+          <span class="batch-name">{{ b.name }}</span>
+          <span class="batch-meta">共 {{ b.total }} · 待审 {{ b.PENDING }} · 已放行 {{ b.APPROVED }} · 已驳回 {{ b.REJECTED }}</span>
+          <span class="batch-ops">
+            <el-button v-if="b.PENDING" size="small" type="primary" plain
+                       :loading="batchBusy === b.name + 'approve'" @click="handleBatchReview(b.name, 'approve')">
+              放行本批次
+            </el-button>
+            <el-button v-if="b.PENDING" size="small" plain
+                       :loading="batchBusy === b.name + 'reject'" @click="handleBatchReview(b.name, 'reject')">
+              驳回本批次
+            </el-button>
+            <el-button v-else-if="b.APPROVED" size="small" link type="warning"
+                       :loading="batchBusy === b.name + 'pending'" @click="handleBatchReview(b.name, 'pending')">
+              重新送审
+            </el-button>
+          </span>
+        </div>
+      </div>
     </div>
 
     <!-- 列表 -->
@@ -81,14 +124,27 @@
           </el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="审核" width="92">
+        <template #default="{ row }">
+          <el-tag size="small" :type="reviewTag(row.review_status)" effect="light">
+            {{ reviewLabel(row.review_status) }}
+          </el-tag>
+          <div v-if="row.batch" class="cell-sub">{{ row.batch }}</div>
+        </template>
+      </el-table-column>
       <el-table-column prop="text" label="题干" min-width="220" show-overflow-tooltip />
       <el-table-column label="启用" width="80" fixed="right">
         <template #default="{ row }">
           <el-switch :model-value="row.enabled" size="small" @change="(v: any) => handleToggle(row, !!v)" />
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="80" fixed="right">
+      <el-table-column label="操作" width="176" fixed="right">
         <template #default="{ row }">
+          <template v-if="row.review_status === 'PENDING'">
+            <el-button link type="success" size="small" @click="handleReview(row, 'approve')">通过</el-button>
+            <el-button link type="danger" size="small" @click="handleReview(row, 'reject')">驳回</el-button>
+          </template>
+          <el-button v-else link type="warning" size="small" @click="handleReview(row, 'pending')">退回待审</el-button>
           <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
         </template>
       </el-table-column>
@@ -173,9 +229,9 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { adminApi } from '@/api'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import type { QuestionBankItem } from '@/types'
 
 const loading = ref(false)
@@ -185,14 +241,18 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
 const categories = ref<string[]>([])
+const batches = ref<string[]>([])
 const stats = ref<any>(null)
+const batchBusy = ref('')
 
 const filters = reactive({
   keyword: '',
   job_category: '' as string,
   question_type: '' as string,
   difficulty: '' as string,
-  enabled: undefined as boolean | undefined
+  enabled: undefined as boolean | undefined,
+  review_status: '' as string,
+  batch: '' as string
 })
 
 const dialogVisible = ref(false)
@@ -215,6 +275,24 @@ const qtypeLabel = (t: string) =>
 const qtypeTag = (t: string) =>
   (({ PROFESSIONAL: 'primary', GENERAL: 'success', STRESS: 'danger' } as Record<string, any>)[t] || 'info')
 
+const reviewLabel = (t: string) =>
+  ({ APPROVED: '已放行', PENDING: '待审核', REJECTED: '已驳回' }[t] || t || '未知')
+const reviewTag = (t: string) =>
+  (({ APPROVED: 'success', PENDING: 'warning', REJECTED: 'danger' } as Record<string, any>)[t] || 'info')
+
+// 批次审核面板数据：按后端返回的 by_batch 排序，待审多的批次排前面，先处理积压
+const batchList = computed(() =>
+  Object.entries<any>(stats.value?.by_batch || {})
+    .map(([name, v]) => ({ name, total: v.total || 0, PENDING: v.PENDING || 0,
+                           APPROVED: v.APPROVED || 0, REJECTED: v.REJECTED || 0 }))
+    .sort((a, b) => (b.PENDING - a.PENDING) || a.name.localeCompare(b.name))
+)
+
+const pickReview = (status: string) => {
+  filters.review_status = filters.review_status === status ? '' : status
+  reload(1)
+}
+
 const reload = async (p?: number) => {
   if (p) page.value = p
   loading.value = true
@@ -226,11 +304,14 @@ const reload = async (p?: number) => {
       job_category: filters.job_category || undefined,
       question_type: filters.question_type || undefined,
       difficulty: filters.difficulty || undefined,
-      enabled: filters.enabled
+      enabled: filters.enabled,
+      review_status: filters.review_status || undefined,
+      batch: filters.batch || undefined
     })
     items.value = res.items || []
     total.value = res.total || 0
     categories.value = res.categories || []
+    batches.value = res.batches || []
     stats.value = res.stats
   } catch (e) {
     // handled by interceptor
@@ -245,6 +326,8 @@ const resetFilters = () => {
   filters.question_type = ''
   filters.difficulty = ''
   filters.enabled = undefined
+  filters.review_status = ''
+  filters.batch = ''
   reload(1)
 }
 
@@ -313,6 +396,49 @@ const handleToggle = async (row: QuestionBankItem, val: boolean) => {
   }
 }
 
+const REVIEW_TEXT: Record<string, string> = {
+  approve: '已通过，该题可参与组卷',
+  reject: '已驳回，该题不再参与组卷',
+  pending: '已退回待审'
+}
+
+const handleReview = async (row: QuestionBankItem, action: 'approve' | 'reject' | 'pending') => {
+  try {
+    const res: any = await adminApi.reviewQuestion(row.id, action)
+    row.review_status = res?.review_status || (action === 'approve' ? 'APPROVED' : action === 'reject' ? 'REJECTED' : 'PENDING')
+    ElMessage.success(REVIEW_TEXT[action])
+    reload()
+  } catch (e) {
+    // handled
+  }
+}
+
+const BATCH_CONFIRM: Record<string, { title: string; danger: boolean }> = {
+  approve: { title: '确认放行本批次？放行后这些题目会立即参与组卷。', danger: false },
+  reject: { title: '确认驳回本批次？被驳回的题目不会参与组卷，可随时退回待审。', danger: true },
+  pending: { title: '确认把本批次重新送审？重新送审后这些题目暂不参与组卷，需再次放行。', danger: true }
+}
+
+const handleBatchReview = async (batch: string, action: 'approve' | 'reject' | 'pending') => {
+  const conf = BATCH_CONFIRM[action]
+  try {
+    await ElMessageBox.confirm(conf.title, `${batch} · 批量${action === 'approve' ? '放行' : action === 'reject' ? '驳回' : '送审'}`,
+      { type: conf.danger ? 'warning' : 'info', confirmButtonText: '确认执行', cancelButtonText: '再看看' })
+  } catch {
+    return
+  }
+  batchBusy.value = batch + action
+  try {
+    const res: any = await adminApi.batchReviewQuestions({ batch, action })
+    ElMessage.success(`已处理 ${res?.affected ?? 0} 题，全站剩余待审 ${res?.pending_total ?? 0} 题`)
+    await reload()
+  } catch (e) {
+    // handled
+  } finally {
+    batchBusy.value = ''
+  }
+}
+
 onMounted(() => reload(1))
 </script>
 
@@ -337,6 +463,24 @@ onMounted(() => reload(1))
 }
 .stat-card .v { font-size: 22px; font-weight: 800; color: var(--zh-primary); }
 .stat-card .k { font-size: 12px; color: var(--zh-text-muted); }
+.stat-clickable { cursor: pointer; transition: border-color 0.15s, box-shadow 0.15s; }
+.stat-clickable:hover { border-color: var(--zh-primary); box-shadow: 0 2px 8px rgba(37, 99, 235, 0.12); }
+.stat-warn .v { color: #D97706; }
+
+.batch-panel { padding: 14px 16px; border-radius: 10px; display: flex; flex-direction: column; gap: 10px; }
+.batch-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.batch-head strong { font-size: 14px; color: var(--zh-text-title); }
+.batch-tip { font-size: 12px; color: var(--zh-text-muted); }
+.batch-rows { display: flex; flex-direction: column; gap: 6px; }
+.batch-row {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 8px 10px; border: 1px solid var(--zh-border); border-radius: 8px; background: #fff;
+}
+.batch-name { font-size: 13px; font-weight: 700; color: #1F2937; min-width: 96px; }
+.batch-meta { font-size: 12.5px; color: var(--zh-text-muted); flex: 1; }
+.batch-ops { display: flex; gap: 8px; align-items: center; }
+
+.cell-sub { font-size: 11px; color: var(--zh-text-muted); margin-top: 2px; }
 
 .filter-bar {
   display: flex; gap: 10px; align-items: center; flex-wrap: wrap;

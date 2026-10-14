@@ -8,7 +8,7 @@ from app.models.user import User
 from app.api.v1.realtime import authenticate_websocket, websocket_session_active
 from app.api.v1.interviews import build_question_payload
 from app.schemas.interview import InterviewAnswerRequest
-from app.services.interview_core import submit_answer_core, finalize_interview, transition_interview, get_remaining_seconds
+from app.services.interview_core import submit_answer_core, finalize_interview, transition_interview, get_elapsed_seconds
 
 logger = logging.getLogger("websocket")
 
@@ -23,7 +23,7 @@ async def handle_interview_websocket(websocket: WebSocket, interview_id: int):
             interview = db.get(Interview, interview_id)
             await websocket.send_json({"type": "connected", "interview_id": interview_id,
                 "status": interview.status, "version": interview.version,
-                "remaining_seconds": get_remaining_seconds(interview)})
+                "elapsed_seconds": get_elapsed_seconds(interview)})
             current = next((q for q in interview.questions if q.seq == interview.current_question_seq), None)
             if current:
                 await websocket.send_json({"type": "question", **build_question_payload(current, interview.status == "COMPLETED")})
@@ -70,7 +70,7 @@ async def handle_interview_websocket(websocket: WebSocket, interview_id: int):
                     elif event in ("start", "pause", "resume", "abort"):
                         transition_interview(db, interview, event)
                         await websocket.send_json({"type": "state", "status": interview.status,
-                            "version": interview.version, "remaining_seconds": get_remaining_seconds(interview)})
+                            "version": interview.version, "elapsed_seconds": get_elapsed_seconds(interview)})
                     elif event == "finish":
                         rep = await finalize_interview(db, interview, user, force=True)
                         await websocket.send_json({"type": "finished", "report_id": rep.id})

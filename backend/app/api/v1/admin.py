@@ -16,7 +16,9 @@ from app.models.question import QuestionBank
 from app.models.system import Complaint, OperationLog, AICallLog, Notification
 from app.schemas.common import ResponseModel, PaginatedData
 from app.schemas.auth import LoginRequest, TokenResponse
-from app.schemas.question import QuestionBankUpsertRequest, QuestionBankToggleRequest
+from app.schemas.question import (QuestionBankUpsertRequest, QuestionBankToggleRequest,
+                                  QuestionBankReviewRequest, QuestionBankBatchReviewRequest,
+                                  REVIEW_STATUS_BY_ACTION)
 
 router = APIRouter(tags=["平台管理后台"])
 
@@ -476,6 +478,8 @@ def _qb_to_dict(q) -> dict:
         "hints": q.hints,
         "time_limit_sec": q.time_limit_sec,
         "source": q.source,
+        "batch": q.batch,
+        "review_status": q.review_status,
         "enabled": q.enabled,
         "usage_count": q.usage_count,
         "created_at": q.created_at,
@@ -492,10 +496,12 @@ def list_question_bank(
     question_type: Optional[str] = None,
     difficulty: Optional[str] = None,
     enabled: Optional[bool] = None,
+    review_status: Optional[str] = None,
+    batch: Optional[str] = None,
     admin: User = Depends(require_roles(["PLATFORM_ADMIN", "SUPER_ADMIN"])),
     db: Session = Depends(get_db),
 ):
-    """题库列表：分页 + 筛选（题干关键词/岗位大类/题型/难度/启用状态）。"""
+    """题库列表：分页 + 筛选（题干关键词/岗位大类/题型/难度/启用状态/审核状态/灌库批次）。"""
     query = db.query(QuestionBank)
     if keyword:
         kw = f"%{keyword.strip()}%"
@@ -508,6 +514,10 @@ def list_question_bank(
         query = query.filter(QuestionBank.difficulty == difficulty)
     if enabled is not None:
         query = query.filter(QuestionBank.enabled == enabled)
+    if review_status:
+        query = query.filter(QuestionBank.review_status == review_status)
+    if batch:
+        query = query.filter(QuestionBank.batch == batch)
 
     total = query.count()
     rows = query.order_by(QuestionBank.id.desc()).offset((page - 1) * page_size).limit(page_size).all()
@@ -515,15 +525,23 @@ def list_question_bank(
     # 全量分类统计（供筛选下拉与概览卡片）
     all_rows = db.query(QuestionBank).all()
     categories = sorted({r.job_category for r in all_rows})
+    batches = sorted({r.batch for r in all_rows if r.batch})
     stats = {
         "total": len(all_rows),
         "enabled": sum(1 for r in all_rows if r.enabled),
+        "pending": sum(1 for r in all_rows if r.review_status == "PENDING"),
+        "rejected": sum(1 for r in all_rows if r.review_status == "REJECTED"),
         "by_type": {},
         "by_category": {},
+        "by_batch": {},
     }
     for r in all_rows:
         stats["by_type"][r.question_type] = stats["by_type"].get(r.question_type, 0) + 1
         stats["by_category"][r.job_category] = stats["by_category"].get(r.job_category, 0) + 1
+        key = r.batch or "未标注"
+        bucket = stats["by_batch"].setdefault(key, {"total": 0, "APPROVED": 0, "PENDING": 0, "REJECTED": 0})
+        bucket["total"] += 1
+        bucket[r.review_status] = bucket.get(r.review_status, 0) + 1
 
     return ResponseModel(data={
         "items": [_qb_to_dict(r) for r in rows],
@@ -531,6 +549,7 @@ def list_question_bank(
         "page": page,
         "page_size": page_size,
         "categories": categories,
+        "batches": batches,
         "stats": stats,
     })
 
@@ -616,3 +635,57 @@ def toggle_question(
                   "ENABLE_QUESTION" if req.enabled else "DISABLE_QUESTION",
                   "QUESTION_BANK", q.id, f"题目{'启用' if req.enabled else '停用'}")
     return ResponseModel(data={"id": q.id, "enabled": q.enabled})
+
+
+@router.patch("/admin/question-bank/{id}/review", response_model=ResponseModel[dict])
+def review_question(
+    id: int,
+    req: QuestionBankReviewRequest,
+    admin: User = Depends(require_roles(["PLATFORM_ADMIN", "SUPER_ADMIN"])),
+    db: Session = Depends(get_db),
+):
+    """单题审核结论：approve 放行入卷 / reject 驳回 / pending 退回待审。
+
+    审核只改 review_status，不改 enabled：驳回的题仍可在列表里追溯，历史卷面快照不受影响。
+    """
+    q = db.query(QuestionBank).filter(QuestionBank.id == id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="题目不存在")
+    q.review_status = REVIEW_STATUS_BY_ACTION[req.action]
+    db.commit()
+    db.refresh(q)
+    log_operation(db, admin.id, admin.email, "ADMIN", f"QUESTION_REVIEW_{req.action.upper()}",
+                  "QUESTION_BANK", q.id, f"题目审核【{req.action}】→ {q.review_status}")
+    return ResponseModel(data=_qb_to_dict(q))
+
+
+@router.post("/admin/question-bank/batch-review", response_model=ResponseModel[dict])
+def batch_review_questions(
+    req: QuestionBankBatchReviewRequest,
+    admin: User = Depends(require_roles(["PLATFORM_ADMIN", "SUPER_ADMIN"])),
+    db: Session = Depends(get_db),
+):
+    """按灌库批次批量审核（D5 分批放行）：一次放行一个批次，把审核窗口压到可接受长度。
+
+    安全边界：approve/reject 只作用于该批次里仍处于 PENDING 的题目，不会覆盖已给出的审核结论；
+    pending（退回待审）则作用于非 PENDING 的题目，用于重新送审。
+    """
+    target = REVIEW_STATUS_BY_ACTION[req.action]
+    query = db.query(QuestionBank).filter(QuestionBank.batch == req.batch)
+    if req.job_category:
+        query = query.filter(QuestionBank.job_category == req.job_category)
+    if req.action == "pending":
+        query = query.filter(QuestionBank.review_status != "PENDING")
+    else:
+        query = query.filter(QuestionBank.review_status == "PENDING")
+    affected = query.update({"review_status": target}, synchronize_session=False)
+    db.commit()
+    log_operation(db, admin.id, admin.email, "ADMIN", f"QUESTION_BATCH_REVIEW_{req.action.upper()}",
+                  "QUESTION_BANK", 0,
+                  f"批次【{req.batch}】{'/' + req.job_category if req.job_category else ''}"
+                  f" 审核【{req.action}】影响 {affected} 题")
+    remaining = db.query(QuestionBank).filter(QuestionBank.review_status == "PENDING").count()
+    return ResponseModel(data={
+        "batch": req.batch, "job_category": req.job_category, "action": req.action,
+        "affected": affected, "target_status": target, "pending_total": remaining,
+    })

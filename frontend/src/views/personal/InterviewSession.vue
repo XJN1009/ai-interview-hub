@@ -27,7 +27,7 @@
             </div>
             <div v-if="!isOpening" class="room-timer-pill">
               <el-icon><Clock /></el-icon>
-              <span>剩余 <strong>{{ formatTime(remainingSeconds) }}</strong></span>
+              <span>已用 <strong>{{ formatTime(elapsedSeconds) }}</strong></span>
             </div>
             <el-button type="danger" plain size="small" class="abort-btn" @click="endDialogVisible = true">
               结束面试
@@ -73,6 +73,7 @@
             <ul class="opening-tips">
               <li>闭卷作答：面试中不展示参考答案，复盘阶段才能逐题对照要点</li>
               <li>每题有建议限时，超时会少量扣分但不会归零；主动跳过按 0 分但不产生严厉评语</li>
+              <li>本场不设硬性截止时间：顶部「已用」只如实记录你的用时，答完再交卷即可</li>
               <li>
                 支持语音口述：
                 {{ speechSupported ? '当前浏览器可用，可边想边说' : '当前浏览器不支持，建议改用 Chrome / Edge' }}
@@ -106,8 +107,8 @@
             <div class="opening-speech">
               <h1 class="question-headline">我的问题问完了，你有什么想问我的吗？</h1>
               <p class="opening-line">
-                可以问团队、业务、协作方式或成长路径；薪酬福利这类问题我们放到 HR 环节详谈。
-                你最多可以问
+                先把想问的记下来：本场反问只登记你的提问，AI 面试官不作答、不评分，也不消耗你的时间。
+                你最多可以记
                 <strong>{{ reverseState?.max_count || 3 }}</strong>
                 条，也可以直接交卷。
               </p>
@@ -116,15 +117,8 @@
             <div v-if="reverseState?.questions?.length" class="reverse-thread">
               <div v-for="item in reverseState.questions" :key="item.seq" class="reverse-item">
                 <div class="reverse-ask">
-                  <span class="reverse-role">你</span>
+                  <span class="reverse-role">你问</span>
                   <span class="reverse-text">{{ item.candidate_text }}</span>
-                </div>
-                <div class="reverse-reply">
-                  <span class="reverse-role reply">面试官</span>
-                  <span class="reverse-text">{{ item.ai_response }}</span>
-                </div>
-                <div v-if="item.evaluation?.comment" class="reverse-comment">
-                  {{ item.evaluation.comment }}
                 </div>
               </div>
             </div>
@@ -372,7 +366,8 @@ const isOpening = computed(() =>
   session.value?.phase === 'OPENING' && ['READY', 'CREATED'].includes(session.value?.status)
 )
 
-const remainingSeconds = ref(1800)
+// 整场正计时：模拟面试不限制提交时间（D6），只如实显示已用时长，暂停不计入
+const elapsedSeconds = ref(0)
 const isPaused = ref(false)
 let timer: any = null
 
@@ -696,7 +691,7 @@ const startTimer = () => {
   if (timer) clearInterval(timer)
   timer = setInterval(() => {
     if (isPaused.value) return
-    if (remainingSeconds.value > 0) remainingSeconds.value--
+    elapsedSeconds.value++
     questionElapsed.value++
   }, 1000)
 }
@@ -760,7 +755,7 @@ const loadSession = async () => {
     const data = res?.data || res
     isPaused.value = data.status === 'PAUSED'
     session.value = data
-    // 反问环节中途刷新：补拉反问状态，保证问答记录不丢
+    // 反问环节中途刷新：补拉反问状态，保证已记录的提问不丢
     if (data.phase === 'REVERSE') {
       try {
         const rs: any = await interviewApi.getReverse(interviewId)
@@ -769,15 +764,8 @@ const loadSession = async () => {
         // 静默失败：不影响主流程，用户仍可跳过反问
       }
     }
-    // 整场剩余时间以服务端 started_at 口径为准（刷新页面不会重置）
-    if (typeof data?.remaining_seconds === 'number') {
-      remainingSeconds.value = data.remaining_seconds
-    } else {
-      remainingSeconds.value = Math.max(
-        60,
-        (data?.duration_minutes || (data?.total_questions || 5) * 5) * 60
-      )
-    }
+    // 整场已用时长以服务端 started_at 口径为准（刷新页面不会重置，也不做截止判定）
+    elapsedSeconds.value = typeof data?.elapsed_seconds === 'number' ? data.elapsed_seconds : 0
     if (data?.current_question) {
       currentQuestion.value = data.current_question
     } else if (data?.questions?.length) {
@@ -817,7 +805,7 @@ const startFromOpening = async () => {
   }
 }
 
-// ===== 反问环节（逐题作答结束后进入；问答不计入总分）=====
+// ===== 反问环节（逐题作答结束后进入；只登记提问，不计分、不耗时、不调用 AI）=====
 const reverseState = ref<any>(null)
 const reverseText = ref('')
 const reverseSubmitting = ref(false)
@@ -846,7 +834,7 @@ const submitReverseQuestion = async () => {
     const res: any = await interviewApi.submitReverse(interviewId, text)
     reverseState.value = res?.data || res
     reverseText.value = ''
-    ElMessage.success('已记录你的提问，面试官已回答')
+    ElMessage.success('已记录你的提问')
   } catch (err: any) {
     ElMessage.error(err?.response?.data?.detail || '提问失败，请稍后重试')
   } finally {
@@ -895,8 +883,8 @@ const handleSkipQuestion = () => {
         if (typeof data?.total_questions === 'number') {
           session.value.total_questions = data.total_questions
         }
-        if (typeof data?.remaining_seconds === 'number') {
-          remainingSeconds.value = data.remaining_seconds
+        if (typeof data?.elapsed_seconds === 'number') {
+          elapsedSeconds.value = data.elapsed_seconds
         }
         session.value.current_question_seq = data.next_question?.seq ?? (session.value.current_question_seq + 1)
         currentQuestion.value = data.next_question || null
@@ -957,12 +945,12 @@ const submitCurrentAnswer = async () => {
     if (data?.finished_qa || data?.is_finished) {
       await enterReverse()
     } else {
-      // 同步追问加题与剩余时间（服务端口径）
+      // 同步追问加题与服务端正计时的已用时长
       if (typeof data?.total_questions === 'number') {
         session.value.total_questions = data.total_questions
       }
-      if (typeof data?.remaining_seconds === 'number') {
-        remainingSeconds.value = data.remaining_seconds
+      if (typeof data?.elapsed_seconds === 'number') {
+        elapsedSeconds.value = data.elapsed_seconds
       }
       session.value.current_question_seq = data.next_question?.seq ?? (session.value.current_question_seq + 1)
       // 下一题由后端卷面下发（题库预生成 / 自适应追问 / AI 补足）
@@ -993,7 +981,13 @@ const doFinish = async () => {
   if (!session.value?.answered_count) return
   endDialogVisible.value = false
   const interviewId = Number(route.params.id)
-  await interviewApi.finishInterview(interviewId)
+  const res: any = await interviewApi.finishInterview(interviewId)
+  const data = res?.data ?? res
+  // 报告生成失败时后端返回 200 + report_id=null：留在当前页，作答已保存，可再次交卷重试
+  if (!data?.report_id) {
+    ElMessage.error(data?.message || '报告生成失败，请稍后重试交卷')
+    return
+  }
   router.push(`/interviews/${interviewId}/report`)
 }
 
@@ -1012,35 +1006,7 @@ const handleGlobalKeydown = (e: KeyboardEvent) => {
   endDialogVisible.value = true
 }
 
-// 整场时间归零：自动交卷生成报告（当前题如有未提交内容一并交上）；一题未答则自动中止
-let autoFinished = false
-watch(remainingSeconds, async (val) => {
-  if (val > 0 || autoFinished || !session.value) return
-  autoFinished = true
-  const interviewId = Number(route.params.id)
-  try {
-    if (answerText.value.trim() && currentQuestion.value?.id) {
-      await interviewApi.answerQuestion(interviewId, {
-        question_id: currentQuestion.value.id,
-        text: answerText.value,
-        duration_sec: questionElapsed.value
-      }).catch(() => {})
-    }
-    if (!session.value.answered_count) {
-      // 无任何作答：交卷必 409，自动走中止归档
-      ElMessage.warning('整场面试时间已用完且无作答记录，本次面试已自动中止')
-      await interviewApi.abortInterview(interviewId).catch(() => {})
-      router.push('/personal/interviews')
-      return
-    }
-    ElMessage.warning('整场面试时间已用完，正在自动交卷生成报告...')
-    await interviewApi.finishInterview(interviewId)
-    router.push(`/interviews/${interviewId}/report`)
-  } catch (e) {
-    ElMessage.error('自动交卷失败，请手动点击"结束面试"')
-    autoFinished = false
-  }
-})
+// 整场不限制提交时间（D6）：不再有「归零自动交卷」，收尾由用户交卷或后端僵尸清扫完成
 
 onMounted(() => {
   loadSession()
@@ -1661,8 +1627,7 @@ onUnmounted(() => {
   background: #fff;
 }
 
-.reverse-ask,
-.reverse-reply {
+.reverse-ask {
   display: flex;
   gap: 8px;
   align-items: flex-start;
@@ -1678,22 +1643,9 @@ onUnmounted(() => {
   line-height: 20px;
 }
 
-.reverse-role.reply {
-  background: #f1f5f9;
-  color: #475569;
-}
-
 .reverse-text {
   font-size: 14px;
   line-height: 1.8;
   color: #334155;
-}
-
-.reverse-comment {
-  padding-left: 10px;
-  border-left: 2px solid #cbd5e1;
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.7;
 }
 </style>

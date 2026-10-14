@@ -1,6 +1,8 @@
 import os
 import uuid
+import asyncio
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, WebSocket
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,15 +17,26 @@ from app.api.v1 import (
 )
 from app.websocket.interview_ws import handle_interview_websocket
 from app.websocket.notification_ws import handle_notification_websocket
+from app.services.interview_sweeper import run_zombie_sweeper_loop
 
 # Create database tables automatically
 # Lightweight incremental migration for columns added after initial release
 ensure_schema()
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # 模拟面试不限制提交时间（D6），关页面遗留的进行中场次由后台任务兜底收尾
+    sweeper = asyncio.create_task(run_zombie_sweeper_loop())
+    yield
+    sweeper.cancel()
+
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="经纬职引-智面仓 AI Interview Hub 全栈后端 API 系统",
-    version="3.0.0"
+    version="3.0.0",
+    lifespan=lifespan
 )
 
 # CORS

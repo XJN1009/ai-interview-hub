@@ -83,11 +83,3 @@ class ResumeRewriteSchema(BaseModel):
     skills: List[Dict[str, Any]] = []
     work_experience: List[Dict[str, Any]] = []
     changes: List[str] = []
-
-class ReverseAnswerSchema(BaseModel):
-    """反问环节：AI 面试官以第一人称回答候选人的提问，并给出过程性点评。
-
-    evaluation 只作报告素材，不参与总分，因此这里不做数值校验。
-    """
-    answer: str
-    evaluation: Dict[str, Any] = {}

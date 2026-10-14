@@ -4,6 +4,7 @@ import sys
 import json
 import uuid
 import tempfile
+import sqlalchemy as sa
 
 BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BACKEND)
@@ -24,7 +25,7 @@ from app.models.job import Job, JobSkill  # noqa: E402
 from app.models.user import User, UserRole  # noqa: E402
 from app.models.company import Company  # noqa: E402
 from app.core.security import get_password_hash  # noqa: E402
-from scripts.seed_question_bank import seed_question_bank  # noqa: E402
+from scripts.seed_question_bank import seed_question_bank, release_batches  # noqa: E402
 
 PASS, FAIL = [], []
 
@@ -62,6 +63,14 @@ check("题库灌库", stat["total"] >= 80, f"total={stat['total']}")
 stat2 = seed_question_bank(db)
 db.commit()
 check("灌库幂等（第二次不新增）", stat2["inserted"] == 0 and stat2["total"] == stat["total"])
+
+# D3 审核闸门：新批次灌库后默认待审，组卷只能取已放行题目
+pending_now = db.query(QuestionBank).filter(QuestionBank.review_status == "PENDING").count()
+check("新批次默认待审（D3 闸门生效）", pending_now > 0, f"pending={pending_now}")
+released = release_batches(db)
+pending_after = db.query(QuestionBank).filter(QuestionBank.review_status == "PENDING").count()
+check("放行后待审清零，题库可参与组卷", released == pending_now and pending_after == 0,
+      f"released={released}")
 
 company = Company(name="测试科技", industry="互联网/软件", size="150-500人",
                   city="深圳", status="VERIFIED")
@@ -124,10 +133,10 @@ qs = iv["questions"]
 check("卷面预生成全部 5 题", len(qs) == 5)
 check("闭卷：作答阶段不下发参考答案", all(not q["reference_points"] for q in qs))
 
-# start → 状态机 + 服务端剩余时间
+# start → 状态机 + 服务端已用时长（正计时，不限制提交时间）
 r = client.post(f"/api/v1/interviews/{iv_id}/start", headers=H)
-check("start 返回服务端剩余时间",
-      r.status_code == 200 and isinstance(r.json()["data"].get("remaining_seconds"), int))
+check("start 返回服务端已用时长",
+      r.status_code == 200 and isinstance(r.json()["data"].get("elapsed_seconds"), int))
 r2 = client.post(f"/api/v1/interviews/{iv_id}/start", headers=H)
 check("重复 start → 409", r2.status_code == 409, str(r2.status_code))
 
@@ -175,12 +184,34 @@ check("反问环节初始状态", r.status_code == 200 and rev["phase"] == "REVE
       str(rev.get("phase")) + f" used={rev.get('used_count')}")
 r = client.post(f"/api/v1/interviews/{iv_id}/reverse",
                 json={"text": "团队目前最看重候选人的哪项能力？"}, headers=H)
+check("反问缺少 request_id → 422", r.status_code == 422, str(r.status_code))
+REV_RID = uuid.uuid4().hex
+REV_Q = "团队目前最看重候选人的哪项能力？"
+r = client.post(f"/api/v1/interviews/{iv_id}/reverse",
+                json={"text": REV_Q, "request_id": REV_RID}, headers=H)
 rev = r.json()["data"]
-check("提交反问返回面试官回答",
-      r.status_code == 200 and rev["used_count"] == 1 and len(rev["questions"][0]["ai_response"]) > 0,
+check("提交反问即时记录提问",
+      r.status_code == 200 and rev["used_count"] == 1 and rev["questions"][0]["candidate_text"] == REV_Q,
       str(r.status_code))
-check("反问点评作为报告素材返回", bool(rev["questions"][0].get("evaluation")))
+check("反问不再返回 AI 回答与点评",
+      set(rev["questions"][0].keys()) == {"seq", "candidate_text"}, str(sorted(rev["questions"][0])))
 check("反问剩余额度递减", rev["remaining"] == rev["max_count"] - 1, str(rev.get("remaining")))
+# 幂等：同一 request_id 超时重发/刷新后重提不得新增记录（反问已不调用 AI，重复只来自误触或重试）
+r = client.post(f"/api/v1/interviews/{iv_id}/reverse",
+                json={"text": REV_Q, "request_id": REV_RID}, headers=H)
+replay = r.json()["data"]
+check("同一 request_id 重发不新增记录",
+      r.status_code == 200 and replay["used_count"] == 1 and len(replay["questions"]) == 1,
+      str(r.status_code) + f" used={replay.get('used_count')}")
+r = client.post(f"/api/v1/interviews/{iv_id}/reverse",
+                json={"text": "换一个内容但复用同一 request_id", "request_id": REV_RID}, headers=H)
+check("同一 request_id 换内容 → 409", r.status_code == 409, str(r.status_code))
+with SessionLocal() as db:
+    indexed = {i["name"]: i for i in sa.inspect(db.bind).get_indexes("interview_reverse_questions")}
+    check("反问表已建 seq/request_id 唯一索引",
+          all(indexed.get(n, {}).get("unique") for n in
+              ("uq_reverse_interview_seq", "uq_reverse_interview_request")),
+          str(sorted(indexed)))
 r = client.post(f"/api/v1/interviews/{iv_id}/reverse/skip", headers=H)
 check("跳过反问 → phase=DONE", r.status_code == 200 and r.json()["data"]["phase"] == "DONE",
       str(r.json().get("data", {}).get("phase")))
@@ -197,7 +228,8 @@ r = client.post(f"/api/v1/interviews/{iv_id}/abort", headers=H)
 check("终态再中止 → 409", r.status_code == 409, str(r.status_code))
 r = client.post(f"/api/v1/interviews/{iv_id}/finish", headers=H)
 check("finish 幂等（返回既有报告）", r.status_code == 200)
-r = client.post(f"/api/v1/interviews/{iv_id}/reverse", json={"text": "结算后再问一条"}, headers=H)
+r = client.post(f"/api/v1/interviews/{iv_id}/reverse",
+                json={"text": "结算后再问一条", "request_id": uuid.uuid4().hex}, headers=H)
 check("结算后再反问 → 409", r.status_code == 409, str(r.status_code))
 
 # 报告
@@ -208,10 +240,11 @@ qa = rep_data["questions_analysis"]
 check("报告逐题数=作答数", len(qa) == answered, f"got={len(qa)}")
 check("报告逐题含参考答案要点", all(len(x.get("reference_points", [])) > 0 for x in qa))
 check("报告含反问环节区块", bool(rep_data.get("reverse_summary")), str(bool(rep_data.get("reverse_summary"))))
-check("报告反问记录含候选人与面试官内容",
+check("报告反问只记录候选人提问",
       len(rep_data["reverse_summary"]["questions"]) == 1
+      and rep_data["reverse_summary"]["question_count"] == 1
       and bool(rep_data["reverse_summary"]["questions"][0]["candidate_text"])
-      and bool(rep_data["reverse_summary"]["questions"][0]["ai_response"]))
+      and "ai_response" not in rep_data["reverse_summary"]["questions"][0])
 r = client.get(f"/api/v1/interviews/{iv_id}", headers=H)
 check("结束后可见参考答案（复盘对照）",
       all(q["reference_points"] for q in r.json()["data"]["questions"]))

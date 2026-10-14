@@ -2,13 +2,13 @@
 
 设计要点（对齐 docs/report.html 中 v1.0 的可复现组卷思路，并适配本项目的多岗位模型）：
 1. 题型配比：专业题 : 通用题 : 压力题，按面试 mode 选择配比，默认 5:3:2。
-2. 岗位匹配：专业题优先在 Job.category 对应的大类内抽题（技能命中优先），
-   不足时只回退到 RELATED_CATEGORIES 登记的关联大类（如 全栈研发 → 后端/前端），
-   不再"不限大类"乱取；通用/压力题回退到"通用"大类，保证任何岗位都能组出卷。
+2. 岗位匹配：专业题只在 Job.category 对应的大类内抽题（技能命中优先），
+   不足部分不再向其他大类借题（D2 取消关联大类白名单），直接计入缺口交 AI 按 JD 生成；
+   通用/压力题回退到"通用"大类，保证任何岗位都能组出卷。
 3. 难度就近：以 Interview.difficulty 为基准，按难度距离排序，同距离优先未用过的题。
 4. 阶段有序：抽取后按 STAGE_ORDER 排布题序（综合素养 → 专业基础 → 深度探究 → 项目深挖
    → 系统设计 → 压力应对），同阶段内随机，避免题序与真实面试节奏脱节。
-5. 去重与补足：同一卷内题干去重；专业题只取本岗位大类或登记的关联大类，
+5. 去重与补足：同一卷内题干去重；专业题只取本岗位大类，
    通用/压力题可放宽到不限大类；仍不足时记入 missing，由调用方按 JD + 简历
    用 AI 动态生成兜底（不再跨岗位借题）。
 6. 卷面快照：抽题结果写入 InterviewPlan.paper_json，题库后续变更不影响历史面试。
@@ -44,14 +44,9 @@ DIFF_ORDER = {"EASY": 0, "MEDIUM": 1, "HARD": 2}
 # 压力题固定为"通用"大类，这里允许按岗位大类精确匹配的专业题类别
 GENERIC_CATEGORY = "通用"
 
-# 关联岗位大类：仅用于「本大类专业题不足」时的受控二级候选。
-# 与已取消的"不限大类"兜底不同——这里只列出技能确实重叠的大类，避免把无关岗位的题塞进卷面。
-RELATED_CATEGORIES: Dict[str, List[str]] = {
-    "全栈研发": ["后端开发", "前端开发"],
-    # 系统运维 / 运维架构 同属 SRE 域且各自仅 3 题，技能高度重叠，互为补充来源
-    "运维架构": ["系统运维"],
-    "系统运维": ["运维架构"],
-}
+# D2 决策：全栈研发 / 系统运维 / 运维架构 已直接补足本大类专业题，
+# 原先的 RELATED_CATEGORIES 跨类借题白名单随之取消——专业题只有「本岗位大类」一级候选，
+# 取不到就计入 missing 交 AI 按 JD 生成，不再有需要同步登记的硬编码特例。
 
 # 面试阶段排布次序：让自动组卷的题序贴合真实面试节奏（开场通用 → 越问越深 → 压力收尾）。
 # 未登记的阶段按「专业基础」位次处理，避免新增 stage 时掉到卷尾。
@@ -249,17 +244,13 @@ def order_by_stage(items: List[Any]) -> List[Any]:
 def _candidate_tiers(question_type: str, category: str) -> List[Optional[List[str]]]:
     """候选岗位大类的放宽层级（v2 相关性下限）。
 
-    - 专业题：① 本岗位大类 → ② RELATED_CATEGORIES 中登记的关联大类（若有）。
+    - 专业题：只有 ① 本岗位大类一级（D2 取消关联大类借题后不再有特例）。
       取不到就计入 missing 交 AI 按 JD 生成，不再用其他岗位的陈题顶替
       ——"不限大类"兜底正是"冒出跨岗位不贴切题目"的根因。
     - 通用/压力题：本就归"通用"大类，沿用「本大类 + 通用 → 不限大类」两级兜底。
     """
     if question_type == PROFESSIONAL:
-        tiers: List[Optional[List[str]]] = [[category]]
-        related = RELATED_CATEGORIES.get(category) or []
-        if related:
-            tiers.append(list(related))
-        return tiers
+        return [[category]]
     return [[category, GENERIC_CATEGORY], None]
 
 
@@ -339,7 +330,7 @@ def build_paper(
         "bank_by_type": _type_stat(all_items),
         "matched_category": category,
         "job_skills": job_skills,
-        # 相关性下限：专业题不跨岗位大类（仅允许 RELATED_CATEGORIES 白名单内的关联大类）
+        # 相关性下限：专业题不跨岗位大类（D2 起连关联大类也不再借题）
         "relevance_floor": True,
         # 本次采用的阶段排布次序，便于事后核对题序规则
         "stage_order": list(STAGE_ORDER),

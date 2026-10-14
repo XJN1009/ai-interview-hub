@@ -1,7 +1,11 @@
-"""题库管理（B8）+ 历史对比/薄弱题重练（B9）端到端冒烟测试。"""
+"""题库管理（B8）+ 审核闸门（D3/D5）+ 历史对比/薄弱题重练（B9）端到端冒烟测试。
+
+作答调用已按现行契约修复（必须携带 question_id 与 request_id），与 test_overtime.py 同口径。
+"""
 import os
 import sys
 import json
+import uuid
 import tempfile
 
 BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -17,6 +21,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 import main  # noqa: E402
 from app.core.database import SessionLocal  # noqa: E402
 from app.models.question import QuestionBank  # noqa: E402
+from app.models.interview import InterviewQuestion  # noqa: E402
 from app.models.job import Job, JobSkill  # noqa: E402
 from app.models.user import User, UserRole  # noqa: E402
 from app.models.company import Company  # noqa: E402
@@ -41,6 +46,11 @@ job = Job(company_id=company.id, title="Java后端开发工程师", category="�
           status="PUBLISHED")
 db.add(job); db.commit(); db.refresh(job)
 db.add(JobSkill(job_id=job.id, skill_name="Redis", level="熟练", required=True))
+# D2：全栈研发大类已直接补题（不再靠借后端/前端题），用它验证本类独立组卷
+fs_job = Job(company_id=company.id, title="低代码平台全栈工程师", category="全栈研发", city="深圳",
+             description="d", duties="du", requirements="re", skills_required="Vue3,Java,MySQL",
+             status="PUBLISHED")
+db.add(fs_job); db.commit(); db.refresh(fs_job)
 
 student = User(email="stu@example.com", password_hash=get_password_hash("123456"),
                account_type="PERSONAL", status="ACTIVE")
@@ -56,6 +66,7 @@ db.add_all([
 ])
 db.commit()
 JOB_ID = job.id
+FS_JOB_ID = fs_job.id
 db.close()
 
 client = TestClient(main.app)
@@ -70,6 +81,35 @@ def login(account):
 H_ADMIN = login("admin@example.com")
 H_PADMIN = login("padmin@example.com")
 H_STU = login("stu@example.com")
+
+
+def current_qid(iv_id):
+    detail = client.get(f"/api/v1/interviews/{iv_id}", headers=H_STU).json()["data"]
+    curr = detail.get("current_question")
+    return curr["id"] if curr else None
+
+
+def answer_all(iv_id, text, limit=8):
+    """按现行契约（question_id + request_id）作答到服务端判定逐题结束。"""
+    last = {}
+    for _ in range(limit):
+        qid = current_qid(iv_id)
+        if qid is None:
+            break
+        r = client.post(f"/api/v1/interviews/{iv_id}/answer",
+                        json={"question_id": qid, "request_id": uuid.uuid4().hex,
+                              "text": text, "duration_sec": 20}, headers=H_STU)
+        last = r.json().get("data") or {}
+        if last.get("is_finished"):
+            break
+    return last
+
+
+def complete_interview(iv_id, text, limit=8):
+    """答完 → 跳过反问 → 交卷：v2 起末题不再自动结算，只有 COMPLETED 会话参与历史对比。"""
+    answer_all(iv_id, text, limit)
+    client.post(f"/api/v1/interviews/{iv_id}/reverse/skip", headers=H_STU)
+    return client.post(f"/api/v1/interviews/{iv_id}/finish", headers=H_STU)
 
 # ===== 1. 权限控制 =====
 r = client.get("/api/v1/admin/question-bank", headers=H_STU)
@@ -90,6 +130,85 @@ d2 = r.json()["data"]
 check("按题型筛选", all(i["question_type"] == "STRESS" for i in d2["items"]) and d2["total"] >= 12)
 r = client.get("/api/v1/admin/question-bank", params={"keyword": "Redis"}, headers=H_ADMIN)
 check("关键词搜索", r.json()["data"]["total"] >= 3, str(r.json()["data"]["total"]))
+
+# ===== 2.5 审核闸门（D3）/ 按批次放行（D5）/ 本类独立组卷（D2） =====
+def bank_categories_of(iv_id):
+    """回查卷面里来自题库的题目属于哪些岗位大类（AI 补位题 bank_id 为空）。"""
+    with SessionLocal() as d:
+        ids = [row.bank_id for row in d.query(InterviewQuestion)
+               .filter(InterviewQuestion.interview_id == iv_id,
+                       InterviewQuestion.bank_id.isnot(None)).all()]
+        if not ids:
+            return []
+        return [q.job_category for q in d.query(QuestionBank).filter(QuestionBank.id.in_(ids)).all()]
+
+
+def new_interview(job_id, mode="TECHNICAL", count=5):
+    r = client.post("/api/v1/interviews", json={
+        "job_id": job_id, "mode": mode, "difficulty": "MEDIUM", "total_questions": count}, headers=H_STU)
+    data = r.json()["data"]
+    return data["id"], data
+
+
+d_pending = client.get("/api/v1/admin/question-bank",
+                       params={"review_status": "PENDING", "batch": "P0-4", "page_size": 100},
+                       headers=H_ADMIN).json()["data"]
+check("待审批次可按 batch 筛出（D3）",
+      d_pending["total"] >= 20 and all(i["review_status"] == "PENDING" and i["batch"] == "P0-4"
+                                       for i in d_pending["items"]), f"total={d_pending['total']}")
+check("概览暴露待审计数与批次分布（D5）",
+      d_pending["stats"]["pending"] >= 20
+      and d_pending["stats"]["by_batch"].get("P0-4", {}).get("PENDING", 0) >= 20
+      and "P0-4" in d_pending["batches"], str(d_pending["stats"].get("pending")))
+
+gate_id, iv_gate = new_interview(FS_JOB_ID)
+cats_before = bank_categories_of(gate_id)
+check("未放行时全栈专业题不借后端/前端大类（D2）",
+      "后端开发" not in cats_before and "前端开发" not in cats_before, str(cats_before))
+check("未放行时缺口由 AI 补位，卷面题数仍完整", len(iv_gate["questions"]) == 5, str(len(iv_gate["questions"])))
+
+r = client.post("/api/v1/admin/question-bank/batch-review",
+                json={"batch": "P0-4", "action": "approve"}, headers=H_STU)
+check("非管理员不能批量放行", r.status_code in (401, 403), str(r.status_code))
+r = client.post("/api/v1/admin/question-bank/batch-review",
+                json={"batch": "P0-4", "action": "approve"}, headers=H_ADMIN)
+d_rel = r.json()["data"]
+check("按批次一次放行（D5）", r.status_code == 200 and d_rel["affected"] >= 20,
+      f"affected={d_rel.get('affected')}")
+again = client.post("/api/v1/admin/question-bank/batch-review",
+                    json={"batch": "P0-4", "action": "approve"}, headers=H_ADMIN).json()["data"]
+check("重复放行不覆盖已放行题目", again["affected"] == 0, str(again["affected"]))
+
+open_id, iv_open = new_interview(FS_JOB_ID)
+cats_after = bank_categories_of(open_id)
+check("放行后全栈研发可用本类题组卷（D2）",
+      "全栈研发" in cats_after and "后端开发" not in cats_after and "前端开发" not in cats_after,
+      str(cats_after))
+
+sample = client.get("/api/v1/admin/question-bank",
+                    params={"batch": "P0-3a", "review_status": "PENDING", "page_size": 1},
+                    headers=H_ADMIN).json()["data"]["items"][0]
+r = client.patch(f"/api/v1/admin/question-bank/{sample['id']}/review",
+                 json={"action": "nope"}, headers=H_ADMIN)
+check("非法审核动作被拒(422)", r.status_code == 422, str(r.status_code))
+r = client.patch(f"/api/v1/admin/question-bank/{sample['id']}/review",
+                 json={"action": "reject"}, headers=H_ADMIN)
+check("单题驳回（D3）", r.status_code == 200 and r.json()["data"]["review_status"] == "REJECTED")
+r = client.patch(f"/api/v1/admin/question-bank/{sample['id']}/review",
+                 json={"action": "pending"}, headers=H_ADMIN)
+check("单题退回待审", r.json()["data"]["review_status"] == "PENDING")
+r = client.patch(f"/api/v1/admin/question-bank/{sample['id']}/review",
+                 json={"action": "approve"}, headers=H_ADMIN)
+check("单题放行", r.json()["data"]["review_status"] == "APPROVED")
+
+all_batches = client.get("/api/v1/admin/question-bank", params={"page_size": 1},
+                         headers=H_ADMIN).json()["data"]["batches"]
+for b in all_batches:
+    client.post("/api/v1/admin/question-bank/batch-review", json={"batch": b, "action": "approve"},
+                headers=H_ADMIN)
+pending_left = client.get("/api/v1/admin/question-bank", params={"page_size": 1},
+                          headers=H_ADMIN).json()["data"]["stats"]["pending"]
+check("逐批放行后待审清零", pending_left == 0, str(pending_left))
 
 # ===== 3. 新增 / 编辑 / 停用 =====
 new_payload = {
@@ -141,11 +260,7 @@ r = client.post("/api/v1/interviews", json={
     headers=H_STU)
 iv_id = r.json()["data"]["id"]
 client.post(f"/api/v1/interviews/{iv_id}/start", headers=H_STU)
-for _ in range(6):
-    d = client.post(f"/api/v1/interviews/{iv_id}/answer",
-                    json={"text": BAD, "duration_sec": 20}, headers=H_STU).json()["data"]
-    if d.get("is_finished"):
-        break
+complete_interview(iv_id, BAD)
 
 r = client.get("/api/v1/interviews/weak-questions", params={"threshold": 60}, headers=H_STU)
 wk = r.json()["data"]
@@ -188,11 +303,7 @@ r = client.post("/api/v1/interviews", json={
     headers=H_STU)
 iv2_id = r.json()["data"]["id"]
 client.post(f"/api/v1/interviews/{iv2_id}/start", headers=H_STU)
-for _ in range(5):
-    d = client.post(f"/api/v1/interviews/{iv2_id}/answer",
-                    json={"text": BAD, "duration_sec": 20}, headers=H_STU).json()["data"]
-    if d.get("is_finished"):
-        break
+complete_interview(iv2_id, BAD)
 
 r = client.get("/api/v1/interviews/history-comparison", params={"job_id": JOB_ID}, headers=H_STU)
 cmp2 = r.json()["data"]
@@ -200,12 +311,9 @@ check("2 次面试后对比就绪", cmp2["ready"] is True, f"sessions={cmp2.get(
 check("逐维趋势含 delta", all("delta" in v and "series" in v for v in cmp2["dimension_trends"].values()))
 check("默认排除 RETRAIN", cmp2["session_count"] == 2, str(cmp2["session_count"]))
 
-# 把重练也答完，然后 include_retrain=True 应包含 3 次
-for _ in range(5):
-    d = client.post(f"/api/v1/interviews/{retrain_iv['id']}/answer",
-                    json={"text": BAD, "duration_sec": 20}, headers=H_STU).json()["data"]
-    if d.get("is_finished"):
-        break
+# 把重练也答完并结算（先 start 进入作答态），include_retrain=True 应包含 3 次
+client.post(f"/api/v1/interviews/{retrain_iv['id']}/start", headers=H_STU)
+complete_interview(retrain_iv["id"], BAD)
 r = client.get("/api/v1/interviews/history-comparison",
                params={"job_id": JOB_ID, "include_retrain": True}, headers=H_STU)
 cmp3 = r.json()["data"]

@@ -1,5 +1,18 @@
 # 更新日志
 
+## 2026-10-13（模拟面试自查闭环：缺陷修复 + D1~D6 决策落地）
+
+- **反问环节收尾与幂等加固（§7-①②）**：`/interviews/{id}/reverse` 提问补齐 `request_id` 幂等，`seq` 改按 `max(seq)+1` 推导并由唯一索引 `uq_reverse_interview_seq` / `uq_reverse_interview_request` 兜底并发（迁移 `0011_reverse_idempotency`，先清洗历史重复行）；`/finish` 恢复优雅降级——报告生成失败不再 500 而是返回 `report_state=FAILED + retryable` 且保留已有得分
+- **D1 反问语义定稿（反问 = 纯记录提问）**：面试官问"你还有什么想问的吗"，候选人就公司/岗位自由提问，也可直接跳过交卷；**"零成本"同时覆盖成绩与 AI 调用**——不计入总分、不产生 competency 证据、不改变六维得分，且**不再为每条提问调用 LLM**。删除 `AIProvider.answer_reverse_question` 与 `ReverseAnswerSchema`（连带无 Key 时写死的"面试官回答"兜底文案，那属于假数据），`submit_reverse_question_core` 改为同步落库，`interview_reverse_questions` 去掉 `ai_response`/`evaluation_json` 两列（迁移 `0013_reverse_record_only`；该表在开发库为 0 行，无数据损失）；报告快照 `answered_count` → `question_count`，`comment` 从"表现良好/具备信息增量"这种无依据评价改为陈述记录到的条数；面试间删除"面试官回答"气泡与逐条点评，报告区块改名「反问环节记录」，`/reverse` 请求撤掉为等待 LLM 而设的 120 秒超时
+- **D6 整场倒计时改为计时器**：契约字段 `remaining_seconds` → `elapsed_seconds`（`interview_core.get_elapsed_seconds` 以服务端 `started_at` 为准，PAUSED 冻结），模拟面试**不再有硬性截止时间**；前端顶部改为「已用 xx:xx」常驻 pill 并删除自动交卷的 `watch(remainingSeconds)` 分支（逐题 `time_limit_sec` 与超时扣分 3分/30秒·上限15 保留不变）
+- **D6-② 僵尸会话定时清扫**（新 `services/interview_sweeper.py`）：以「最后活动时间」（创建/开始/暂停 + 最后作答 + 最后反问，**不是** `started_at`）判定闲置 >24h 的 IN_PROGRESS/PAUSED 会话，有作答则 `finalize_interview(force=True)` 结算归档、无作答则 abort；`main.py` 用 `asyncio` lifespan 起停（10 分钟一轮，零新依赖），单轮失败回滚留待下一轮，TestClient 不进 lifespan 故不影响既有回归
+- **D2 组卷零跨类**：删除 `paper_builder.RELATED_CATEGORIES` 白名单，`_candidate_tiers(PROFESSIONAL, cat)` 收敛为单一本类；缺口一律交 AI 按 JD 生成，不再借用相邻大类陈题
+- **D3+D5 题库批次化与分批放行**：`question_bank` 新增 `batch` 列（迁移 `0012_question_bank_batch`），种子按批次拆为 `P0-CORE 86 / P0-NONTECH 32 / P0-3a 60 / P0-3b 65 / P0-3c 54 / P0-4 24 = 321`；仅 `APPROVED` 题可被组卷抽取，`P0-3a/b/c`（179）与新增 `P0-4`（24）默认 `PENDING` 走管理端审核；补 24 题消除专业题缺口
+- **管理端审核面**（`admin.py` + `views/admin/QuestionBank.vue`）：新增 `PATCH /admin/question-bank/{id}/review`、`POST /admin/question-bank/batch-review`（按批次/大类批量放行·驳回·退回待审，只改目标状态外的行故幂等、不覆盖已有人工结论）；列表支持 `review_status`/`batch` 筛选，统计新增 `pending/rejected/by_batch`，页面上待审/驳回卡片可点击直达筛选 + 批次审核面板 + 行级三态操作
+- **D4 陈旧脚本修复并纳入回归**：`scripts/test_overtime.py`（此前 422 崩溃）按现行契约重写、`scripts/test_admin_bank_and_insights.py` 修正 `bank_id` 取值与 RETRAIN 结算口径
+- **验证**：`pytest tests -q` **76 passed / 0 failed**（回归覆盖：反问分数不变、**反问不触达 LLM**、反问幂等与并发同号、无硬截止、清扫器结算/取消/跳过、批次闸门与零跨类）；冒烟 `test_question_bank.py` **60/60**、`test_overtime.py` **32/32**、`test_admin_bank_and_insights.py` **46/46**；迁移 0011/0012/0013 在开发库**副本**上各自升级→降级→再升级通过（0013 复核反问表最终列集合与两个唯一索引）；`npm run build`（`vue-tsc -b` + 打包）通过；lifespan 起停实测 `idle=24.0h interval=600s`。回归阶段全程只读写副本；随后按发布流程在真实库就地执行了升库/灌库/放行
+- **部署提示**：开发库已完成三步（2026-10-13 实测）——升到 **0013**、`seed_question_bank.py` 新增 24 题（总量 **321**）、全部批次放行（`select review_status,count(*) …` → `[('APPROVED', 321)]`，反问表已无 `ai_response`/`evaluation_json`）。其它环境部署同样需要这三步；执行 `0013` 前若该库反问表已有 AI 回答文本请先导出（降级只加回空列），并建议先备份 `zhimeicang.db`（`*.db` 已在 `.gitignore` 内）
+
 ## 2026-10-06
 - **面试间页面改版：取消/结束合并 + 浅色简约主题 + 铺满布局**（`views/personal/InterviewSession.vue`）：
   - 「取消面试」并入「结束面试」：顶栏单按钮唤起对话框，展示真实作答进度（已答 N/总题数），提供"交卷并生成报告"（无作答时禁用）与"取消面试"（abort 中止归档、不生成报告）两个出口；快捷键 **Esc** 直接唤起该对话框

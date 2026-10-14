@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, Float, Boolean, DateTime, ForeignKey, Text, Index
 from sqlalchemy.orm import relationship
 from app.core.database import Base
 
@@ -57,14 +57,19 @@ class InterviewReverseQuestion(Base):
     """
 
     __tablename__ = "interview_reverse_questions"
+    # 唯一索引是并发与重发的最后防线：seq 防两条"第 1 条反问"同时落库，
+    # request_id 防同一请求超时重发或刷新后重提产生重复记录。
+    __table_args__ = (
+        Index("uq_reverse_interview_seq", "interview_id", "seq", unique=True),
+        Index("uq_reverse_interview_request", "interview_id", "request_id", unique=True),
+    )
 
     id = Column(Integer, primary_key=True, index=True, autoincrement=True)
     interview_id = Column(Integer, ForeignKey("interviews.id"), nullable=False, index=True)
     seq = Column(Integer, nullable=False)  # 第几条反问（1 起）
+    request_id = Column(String(64), nullable=True)  # 客户端幂等键；历史数据为空
+    # 反问只登记候选人的提问：AI 不作答、不点评，因此不占用 LLM 调用与时长
     candidate_text = Column(Text, nullable=False)
-    ai_response = Column(Text, nullable=False)
-    # 反问质量点评（JSON：comment/highlights/suggestions），仅作报告素材
-    evaluation_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     interview = relationship("Interview", back_populates="reverse_questions")
@@ -166,7 +171,7 @@ class InterviewReport(Base):
     suggestions_json = Column(Text, nullable=False)
     summary = Column(Text, nullable=False)
     provenance_json = Column(Text, nullable=True)
-    # 反问环节汇总（JSON：questions[{seq,candidate_text,ai_response,evaluation}] + comment + skipped）
+    # 反问环节汇总（JSON：questions[{seq,candidate_text}] + question_count + skipped + comment）
     reverse_summary_json = Column(Text, nullable=True)
     status = Column(String(50), default="COMPLETED", nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

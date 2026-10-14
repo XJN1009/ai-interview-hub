@@ -4,9 +4,12 @@
     cd backend
     ..\\.venv\\Scripts\\python.exe scripts\\seed_question_bank.py           # 增量灌库（推荐）
     ..\\.venv\\Scripts\\python.exe scripts\\seed_question_bank.py --rebuild  # 清空后重建
+    ..\\.venv\\Scripts\\python.exe scripts\\seed_question_bank.py --requeue  # 把受闸门批次重新送审
 
 幂等策略：以题干 text 为唯一键，存在则更新元信息、不存在则插入；
 默认不删除人工新增的题目，--rebuild 才会清空 SEED 来源的题目后重建。
+审核状态（D3）：新题按批次策略落库（P0-3a/3b/3c 与 P0-4 为 PENDING，需管理端放行），
+已存在的题目不会被脚本改写 review_status，避免覆盖管理端已经做出的审核结论。
 """
 import argparse
 import json
@@ -16,12 +19,13 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.core.database import Base, SessionLocal, engine  # noqa: E402
-from app.data.question_bank import QUESTION_BANK_SEED  # noqa: E402
+from app.data.question_bank import (BATCH_REVIEW_POLICY, GATED_BATCH_NAMES,  # noqa: E402
+                                    QUESTION_BANK_SEED)
 from app.models.question import QuestionBank  # noqa: E402
 
 
-def seed_question_bank(db, rebuild: bool = False) -> dict:
-    """把题库种子数据写入 question_bank 表，返回 {inserted, updated, skipped}。"""
+def seed_question_bank(db, rebuild: bool = False, requeue_gated: bool = False) -> dict:
+    """把题库种子数据写入 question_bank 表，返回 {inserted, updated, skipped, pending, total}。"""
     if rebuild:
         deleted = db.query(QuestionBank).filter(QuestionBank.source == "SEED").delete(synchronize_session=False)
         db.commit()
@@ -36,6 +40,7 @@ def seed_question_bank(db, rebuild: bool = False) -> dict:
             skipped += 1
             continue
 
+        batch = item.get("batch")
         payload = {
             "job_category": item.get("job_category") or "通用",
             "question_type": item.get("question_type") or "PROFESSIONAL",
@@ -46,6 +51,7 @@ def seed_question_bank(db, rebuild: bool = False) -> dict:
             "reference_points_json": json.dumps(item.get("reference_points") or [], ensure_ascii=False),
             "hints": item.get("hints"),
             "time_limit_sec": int(item.get("time_limit_sec") or 180),
+            "batch": batch,
             "enabled": True,
         }
 
@@ -55,25 +61,54 @@ def seed_question_bank(db, rebuild: bool = False) -> dict:
                 setattr(q, k, v)
             updated += 1
         else:
-            db.add(QuestionBank(text=text, source="SEED", **payload))
+            db.add(QuestionBank(text=text, source="SEED",
+                                review_status=BATCH_REVIEW_POLICY.get(batch, "APPROVED"), **payload))
             inserted += 1
+
+    if requeue_gated:
+        # 主动送审：把受闸门批次里已放行的题目重新置为待审（管理端按批次再放行）
+        requeued = (db.query(QuestionBank)
+                    .filter(QuestionBank.batch.in_(list(GATED_BATCH_NAMES)),
+                            QuestionBank.review_status != "REJECTED")
+                    .update({"review_status": "PENDING"}, synchronize_session=False))
+        print(f"[requeue] 已把 {requeued} 道受闸门题目重新置为 PENDING")
 
     db.commit()
     total = db.query(QuestionBank).count()
-    return {"inserted": inserted, "updated": updated, "skipped": skipped, "total": total}
+    pending = db.query(QuestionBank).filter(QuestionBank.review_status == "PENDING").count()
+    return {"inserted": inserted, "updated": updated, "skipped": skipped,
+            "pending": pending, "total": total}
+
+
+def release_batches(db, batches=None, job_category=None) -> int:
+    """把待审批次放行入卷，等价于管理端的「放行本批次」。
+
+    冒烟脚本需要先模拟管理员完成审核，才能继续验证题库组卷本身；
+    默认放行全部批次，传 batches 可只放行其中几个。
+    """
+    query = db.query(QuestionBank).filter(QuestionBank.review_status == "PENDING")
+    if batches:
+        query = query.filter(QuestionBank.batch.in_(list(batches)))
+    if job_category:
+        query = query.filter(QuestionBank.job_category == job_category)
+    released = query.update({"review_status": "APPROVED"}, synchronize_session=False)
+    db.commit()
+    return released
 
 
 def main():
     parser = argparse.ArgumentParser(description="灌入结构化面试题库")
     parser.add_argument("--rebuild", action="store_true", help="先清空 SEED 来源题目再重建")
+    parser.add_argument("--requeue", action="store_true",
+                        help="把受审核闸门的批次（P0-3a/3b/3c、P0-4）重新置为待审")
     args = parser.parse_args()
 
     Base.metadata.create_all(bind=engine)
     db = SessionLocal()
     try:
-        stat = seed_question_bank(db, rebuild=args.rebuild)
-        print(f"题库灌库完成：新增 {stat['inserted']}，更新 {stat['updated']}，"
-              f"跳过 {stat['skipped']}，当前总量 {stat['total']}")
+        stat = seed_question_bank(db, rebuild=args.rebuild, requeue_gated=args.requeue)
+        print(f"题库灌库完成：新增 {stat['inserted']}，更新 {stat['updated']}，跳过 {stat['skipped']}，"
+              f"当前总量 {stat['total']}，待审 {stat['pending']}")
     finally:
         db.close()
 

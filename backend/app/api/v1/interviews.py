@@ -23,7 +23,7 @@ from app.services.paper_builder import (
 )
 from app.services.interview_core import (
     build_jd_text, build_resume_context, load_interview_context,
-    build_ai_reference_points, get_remaining_seconds, mark_question_shown,
+    build_ai_reference_points, get_elapsed_seconds, mark_question_shown,
     submit_answer_core, finalize_interview, transition_interview,
     get_reverse_state, submit_reverse_question_core, skip_reverse_core
 )
@@ -176,7 +176,7 @@ def build_interview_out(interview: Interview) -> InterviewOut:
         started_at=interview.started_at,
         ended_at=interview.ended_at,
         created_at=interview.created_at,
-        remaining_seconds=get_remaining_seconds(interview),
+        elapsed_seconds=get_elapsed_seconds(interview),
         answered_count=sum(1 for q in interview.questions if q.answer and q.answer.evaluation),
         questions=q_outs,
         current_question=curr_q_out
@@ -703,7 +703,7 @@ def start_interview(id: int, current_user: User = Depends(require_auth), db: Ses
     transition_interview(db, interview, "start")
     return ResponseModel(data={
         "status": interview.status,
-        "remaining_seconds": get_remaining_seconds(interview),
+        "elapsed_seconds": get_elapsed_seconds(interview),
         "message": "面试开始"
     })
 
@@ -725,7 +725,7 @@ def resume_interview(id: int, current_user: User = Depends(require_auth), db: Se
     transition_interview(db, interview, "resume")
     return ResponseModel(data={
         "status": "IN_PROGRESS",
-        "remaining_seconds": get_remaining_seconds(interview),
+        "elapsed_seconds": get_elapsed_seconds(interview),
         "message": "面试已恢复继续"
     })
 
@@ -773,7 +773,7 @@ async def answer_interview_question(id: int, req: InterviewAnswerRequest, curren
         is_followup=result["is_followup"],
         is_finished=result["finished"],
         report_id=result.get("report_id"),
-        remaining_seconds=result["remaining_seconds"],
+        elapsed_seconds=result.get("elapsed_seconds"),
         total_questions=result["total_questions"],
         raw_score=result.get("raw_score"),
         overtime=result.get("overtime", False),
@@ -792,14 +792,14 @@ def get_interview_reverse(id: int, current_user: User = Depends(require_auth), d
 
 
 @router.post("/interviews/{id}/reverse", response_model=ResponseModel[ReverseStateOut])
-async def submit_interview_reverse(id: int, req: ReverseSubmitRequest,
-                                   current_user: User = Depends(require_auth),
-                                   db: Session = Depends(get_db)):
-    """提交一条反问：AI 面试官以第一人称回答并点评（不计入总分）。"""
+def submit_interview_reverse(id: int, req: ReverseSubmitRequest,
+                             current_user: User = Depends(require_auth),
+                             db: Session = Depends(get_db)):
+    """记录一条反问：只登记候选人的提问（AI 不作答、不计分、不消耗 LLM）；同一 request_id 重发返回既有结果。"""
     interview = db.query(Interview).filter_by(id=id).first()
     if not interview:
         raise HTTPException(status_code=404, detail="面试记录不存在")
-    state = await submit_reverse_question_core(db, interview, current_user, req.text)
+    state = submit_reverse_question_core(db, interview, current_user, req.text, req.request_id)
     log_operation(db, current_user.id, current_user.email, "PERSONAL", "REVERSE_QUESTION",
                   "INTERVIEW", id, f"反问环节提问第 {state['used_count']} 条")
     return ResponseModel(data=ReverseStateOut(**state))
@@ -822,14 +822,39 @@ async def finish_interview(id: int, current_user: User = Depends(require_auth), 
         raise HTTPException(status_code=404, detail="面试不存在")
 
     # 结算与报告生成统一走核心服务：幂等、未答完拦截、无作答不再产出假报告
-    rep = await finalize_interview(db, interview, current_user, force=True)
+    try:
+        rep = await finalize_interview(db, interview, current_user, force=True)
+    except HTTPException as exc:
+        # 4xx 是有意义的业务拒绝（未答完、并发占用、无权），保留原状态码
+        if exc.status_code < 500:
+            raise
+        return _finish_failed(db, id, exc.detail)
+    except Exception as exc:
+        logger.exception("interview=%s 交卷结算失败", id)
+        return _finish_failed(db, id, str(exc))
+
     log_operation(db, current_user.id, current_user.email, "PERSONAL", "FINISH_INTERVIEW",
                   "INTERVIEW", id, f"完成模拟面试，得分：{rep.total_score}")
 
     return ResponseModel(data={
         "report_id": rep.id,
         "total_score": rep.total_score,
+        "report_state": "COMPLETED",
         "report_url": f"/personal/interviews/{id}/report"
+    })
+
+
+def _finish_failed(db: Session, interview_id: int, reason: str) -> ResponseModel:
+    """报告生成失败的结构化降级响应：作答与评分已落库，用户可再次点击交卷重试。"""
+    state = db.query(Interview.report_state).filter(Interview.id == interview_id).scalar() or "FAILED"
+    return ResponseModel(data={
+        "report_id": None,
+        "total_score": None,
+        "report_state": state,
+        "retryable": True,
+        "report_url": None,
+        "message": "报告生成失败，已保存的作答不会丢失，可再次交卷重试",
+        "reason": str(reason)[:200],
     })
 
 @router.get("/interviews/{id}/report", response_model=ResponseModel[InterviewReportOut])

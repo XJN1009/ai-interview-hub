@@ -139,6 +139,8 @@ export interface QuestionBankItem {
   hints?: string | null
   time_limit_sec: number
   source: string
+  batch?: string | null
+  review_status: string
   enabled: boolean
   usage_count: number
   created_at: string
@@ -151,11 +153,15 @@ export interface QuestionBankListResult {
   page: number
   page_size: number
   categories: string[]
+  batches: string[]
   stats: {
     total: number
     enabled: number
+    pending: number
+    rejected: number
     by_type: Record<string, number>
     by_category: Record<string, number>
+    by_batch: Record<string, { total: number; APPROVED: number; PENDING: number; REJECTED: number }>
   }
 }
 
@@ -282,19 +288,13 @@ export interface InterviewReportData {
     avg_usage_ratio: number
     overtime_skills: string[]
   } | null
-  /** 反问环节汇总（v2 新增）；旧报告无此字段时为 null */
+  /** 反问环节汇总（v2 新增）；只登记候选人的提问，旧报告无此字段时为 null */
   reverse_summary?: {
     questions: {
       seq: number
       candidate_text: string
-      ai_response: string
-      evaluation?: {
-        comment?: string
-        highlights?: string[]
-        suggestions?: string[]
-      }
     }[]
-    answered_count: number
+    question_count: number
     skipped: boolean
     comment: string
   } | null

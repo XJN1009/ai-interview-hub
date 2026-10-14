@@ -33,11 +33,13 @@ class QuestionBank(Base):
     # 参考答案要点（JSON 字符串数组），用于逐题复盘对照
     reference_points_json = Column(Text, nullable=True)
     hints = Column(String(255), nullable=True)  # 临场答题提示
-    # 逐题建议限时（秒），用于面试间倒计时
+    # 逐题建议限时（秒）：服务端据此判定单题超时并轻扣分（整场不限制提交时间）
     time_limit_sec = Column(Integer, default=180, nullable=False)
 
     source = Column(String(30), default="SEED", nullable=False)  # SEED, MANUAL, AI_GENERATED
-    # APPROVED 已审可入卷 / PENDING 待审：组卷只取 APPROVED，防止未审题目回流污染卷面
+    # 灌库批次（P0-CORE / P0-3a / P0-4 …）：管理端按批次批量放行，历史数据为空
+    batch = Column(String(30), nullable=True, index=True)
+    # APPROVED 已审可入卷 / PENDING 待审 / REJECTED 已驳回：组卷只取 APPROVED，防止未审题目回流污染卷面
     review_status = Column(String(20), default="APPROVED", nullable=False)
     enabled = Column(Boolean, default=True, nullable=False)
     usage_count = Column(Integer, default=0, nullable=False)  # 抽题时用于均衡出题

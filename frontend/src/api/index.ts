@@ -110,10 +110,20 @@ export const interviewApi = {
     return result
   },
   finishInterview: (id: number) => client.post(`/interviews/${id}/finish`, null, { timeout: 120000 }),
-  // 反问环节：逐题作答结束后进入，候选人的提问不计入总分
+  // 反问环节：逐题作答结束后进入，只登记候选人的提问（AI 不作答，不计入总分）
   getReverse: (id: number) => client.get<any, any>(`/interviews/${id}/reverse`),
-  submitReverse: (id: number, text: string) =>
-    client.post<any, any>(`/interviews/${id}/reverse`, { text }, { timeout: 120000 }),
+  submitReverse: async (id: number, text: string) => {
+    // 幂等：同一条提问在超时重发/刷新后原样重提时复用 request_id，由服务端去重；
+    // 文本改动即视为新提问，换用新的 request_id。
+    const key = `zh_reverse_request_${id}`
+    const saved = sessionStorage.getItem(key)
+    const last = saved ? JSON.parse(saved) : null
+    const pending = last && last.text === text ? last : { text, request_id: crypto.randomUUID() }
+    sessionStorage.setItem(key, JSON.stringify(pending))
+    const result = await client.post<any, any>(`/interviews/${id}/reverse`, pending)
+    sessionStorage.removeItem(key)
+    return result
+  },
   skipReverse: (id: number) => client.post<any, any>(`/interviews/${id}/reverse/skip`),
   abortInterview: (id: number) => client.post(`/interviews/${id}/abort`),
   getReport: (id: number) => client.get<any, InterviewReportData>(`/interviews/${id}/report`),
@@ -192,6 +202,10 @@ export const adminApi = {
   createQuestion: (data: any) => client.post('/admin/question-bank', data),
   updateQuestion: (id: number, data: any) => client.put(`/admin/question-bank/${id}`, data),
   toggleQuestion: (id: number, enabled: boolean) => client.patch(`/admin/question-bank/${id}/toggle`, { enabled }),
+  reviewQuestion: (id: number, action: 'approve' | 'reject' | 'pending') =>
+    client.patch(`/admin/question-bank/${id}/review`, { action }),
+  batchReviewQuestions: (data: { batch: string; action: 'approve' | 'reject' | 'pending'; job_category?: string }) =>
+    client.post<any, { affected: number; pending_total: number }>('/admin/question-bank/batch-review', data),
 }
 
 export const privateFileApi = {

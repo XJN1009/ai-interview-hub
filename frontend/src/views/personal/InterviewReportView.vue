@@ -265,9 +265,9 @@
                   </p>
                 </div>
 
-                <!-- 反问环节：AI 面试官回答候选人的提问（不计入总分，仅作复盘素材） -->
+                <!-- 反问环节：只登记候选人的提问（不计入总分，AI 不作答） -->
                 <div v-if="report.reverse_summary" class="reverse-card">
-                  <h3 class="sec-title">反问环节表现</h3>
+                  <h3 class="sec-title">反问环节记录</h3>
                   <p class="rc-comment">{{ report.reverse_summary.comment }}</p>
                   <div v-if="report.reverse_summary.questions?.length" class="rc-thread">
                     <div v-for="item in report.reverse_summary.questions" :key="item.seq" class="rc-item">
@@ -275,16 +275,6 @@
                         <span class="rc-role">你的提问</span>
                         <span class="rc-text">{{ item.candidate_text }}</span>
                       </div>
-                      <div class="rc-reply">
-                        <span class="rc-role reply">面试官回答</span>
-                        <span class="rc-text">{{ item.ai_response }}</span>
-                      </div>
-                      <div v-if="item.evaluation?.comment" class="rc-eval">
-                        {{ item.evaluation.comment }}
-                      </div>
-                      <ul v-if="item.evaluation?.suggestions?.length" class="rc-suggest">
-                        <li v-for="(s, i) in item.evaluation.suggestions" :key="i">{{ s }}</li>
-                      </ul>
                     </div>
                   </div>
                   <p v-else class="rc-tip">本次未使用反问环节。</p>
@@ -1390,15 +1380,10 @@ onMounted(() => {
   background: #F8FAFC;
 }
 
-.rc-ask,
-.rc-reply {
+.rc-ask {
   display: flex;
   gap: 10px;
   align-items: flex-start;
-}
-
-.rc-reply {
-  margin-top: 10px;
 }
 
 .rc-role {
@@ -1411,31 +1396,9 @@ onMounted(() => {
   line-height: 20px;
 }
 
-.rc-role.reply {
-  background: #E2E8F0;
-  color: #475569;
-}
-
 .rc-text {
   color: #334155;
   font-size: 14px;
-  line-height: 1.8;
-}
-
-.rc-eval {
-  margin-top: 10px;
-  padding-left: 10px;
-  border-left: 2px solid #CBD5E1;
-  color: #64748B;
-  font-size: 13px;
-  line-height: 1.7;
-}
-
-.rc-suggest {
-  margin: 8px 0 0;
-  padding-left: 30px;
-  color: #64748B;
-  font-size: 13px;
   line-height: 1.8;
 }
 

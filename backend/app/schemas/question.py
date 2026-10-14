@@ -73,3 +73,35 @@ class QuestionBankUpsertRequest(BaseModel):
 
 class QuestionBankToggleRequest(BaseModel):
     enabled: bool
+
+
+# 审核动作 → 落库状态：approve 放行入卷，reject 驳回（永不入卷），pending 退回待审
+REVIEW_STATUS_BY_ACTION = {"approve": "APPROVED", "reject": "REJECTED", "pending": "PENDING"}
+
+
+class QuestionBankReviewRequest(BaseModel):
+    """单题审核结论。"""
+    action: str
+
+    @field_validator("action")
+    @classmethod
+    def _check_action(cls, v: str) -> str:
+        value = (v or "").strip().lower()
+        if value not in REVIEW_STATUS_BY_ACTION:
+            raise ValueError(f"action 必须是 {'/'.join(REVIEW_STATUS_BY_ACTION)} 之一")
+        return value
+
+
+class QuestionBankBatchReviewRequest(BaseModel):
+    """按灌库批次批量审核（D5 分批放行）；可选再按岗位大类收窄范围。"""
+    batch: str = Field(..., min_length=1, max_length=30)
+    action: str
+    job_category: Optional[str] = Field(None, max_length=50)
+
+    @field_validator("action")
+    @classmethod
+    def _check_action(cls, v: str) -> str:
+        value = (v or "").strip().lower()
+        if value not in REVIEW_STATUS_BY_ACTION:
+            raise ValueError(f"action 必须是 {'/'.join(REVIEW_STATUS_BY_ACTION)} 之一")
+        return value

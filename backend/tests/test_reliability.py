@@ -5,7 +5,9 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -22,15 +24,20 @@ from app.models.user import User, UserRole
 from app.models.system import UserSession, FileRecord, AICallLog, Notification
 from app.models.company import Company, CompanyMember
 from app.models.job import Job, JobSkill
+from app.models.question import QuestionBank
 from app.models.resume import Resume
 from app.models.application import Application, ApplicationStatusHistory
 from app.models.external_application import ExternalApplication
-from app.models.interview import Interview, InterviewQuestion, InterviewAnswer, AnswerEvaluation, InterviewReport
+from app.models.interview import (Interview, InterviewQuestion, InterviewAnswer, AnswerEvaluation,
+                                  InterviewReport, InterviewReverseQuestion)
 from app.models.profile import UserCompetency, CompetencyHistory
 from app.models.learning import LearningTask
 from app.ai.provider import ai_provider
 from app.ai.mock_data import generate_mock_report
-from app.services.interview_core import submit_answer_core, get_remaining_seconds
+from app.services import interview_core
+from app.services.interview_core import (submit_answer_core, get_elapsed_seconds,
+                                         submit_reverse_question_core)
+from app.services.interview_sweeper import sweep_zombie_interviews
 from app.services.learning import generate_and_store_learning_plan
 from app.services.analytics import recruitment_metrics, ai_metrics
 from app.services.ai_settings import invalidate_cache
@@ -308,10 +315,13 @@ def test_report_failure_is_recoverable_without_regrading(monkeypatch):
     assert response.status_code == 200, response.text
     # v2：逐题作答结束进入反问环节，不再自动结算
     assert response.json()["data"]["is_finished"] and response.json()["data"]["phase"] == "REVERSE"
-    # 结算阶段报告生成失败：保留已提交作答并把 report_state 标记为 FAILED，便于稍后重试
-    # （TestClient 默认向上抛出服务端异常，此处显式捕获以验证状态回写）
-    with pytest.raises(RuntimeError):
-        client.post(f"/api/v1/interviews/{iid}/finish", headers=headers[0])
+    # 结算阶段报告生成失败：优雅降级为 200 + 结构化失败信息，作答与评分保留，可再次交卷重试
+    degraded = client.post(f"/api/v1/interviews/{iid}/finish", headers=headers[0])
+    assert degraded.status_code == 200, degraded.text
+    assert degraded.json()["data"]["report_id"] is None
+    assert degraded.json()["data"]["report_state"] == "FAILED"
+    assert degraded.json()["data"]["retryable"] is True
+    assert "重试" in degraded.json()["data"]["message"]
     with SessionLocal() as db:
         assert db.get(Interview, iid).report_state == "FAILED"
         assert db.query(AnswerEvaluation).count() == 1
@@ -323,6 +333,91 @@ def test_report_failure_is_recoverable_without_regrading(monkeypatch):
     assert again.json()["data"]["report_id"] == finish.json()["data"]["report_id"]
     with SessionLocal() as db:
         assert db.query(AnswerEvaluation).count() == db.query(InterviewReport).count() == db.query(CompetencyHistory).count() == 1
+
+
+def to_reverse(interview_id):
+    """把会话直接置于反问环节，用于单独验证反问链路。"""
+    with SessionLocal() as db:
+        db.get(Interview, interview_id).phase = "REVERSE"
+        db.commit()
+
+
+def test_reverse_question_is_idempotent_by_request_id():
+    uid, oid, aid, jid, cid, headers = users_and_job()
+    iid, qids = make_interview(uid, jid)
+    to_reverse(iid)
+    payload = {"text": "团队目前最看重候选人的哪项能力？", "request_id": "reverse-idem-001"}
+    first = client.post(f"/api/v1/interviews/{iid}/reverse", headers=headers[0], json=payload)
+    assert first.status_code == 200, first.text
+    assert first.json()["data"]["used_count"] == 1
+    # 超时重发/刷新后原样重提：返回既有结果，不新增记录
+    replay = client.post(f"/api/v1/interviews/{iid}/reverse", headers=headers[0], json=payload)
+    assert replay.json()["data"] == first.json()["data"]
+    # 同一 request_id 换内容不是重发，与逐题作答同一口径拒绝
+    assert client.post(f"/api/v1/interviews/{iid}/reverse", headers=headers[0],
+                       json={**payload, "text": "换一个内容"}).status_code == 409
+    assert client.post(f"/api/v1/interviews/{iid}/reverse", headers=headers[0],
+                       json={"text": "缺少幂等键"}).status_code == 422
+    with SessionLocal() as db:
+        assert db.query(InterviewReverseQuestion).filter_by(interview_id=iid).count() == 1
+
+
+def test_two_concurrent_reverse_submissions_keep_one_row(monkeypatch):
+    uid, oid, aid, jid, cid, headers = users_and_job()
+    iid, qids = make_interview(uid, jid)
+    to_reverse(iid)
+
+    barrier = threading.Barrier(2)
+    derive_seq = interview_core._next_reverse_seq
+
+    def racing_seq(db, interview_id):
+        seq = derive_seq(db, interview_id)
+        # 两个会话都算出同一个 seq 之后才继续，确定性复现并发同号窗口
+        barrier.wait(timeout=10)
+        return seq
+
+    monkeypatch.setattr(interview_core, "_next_reverse_seq", racing_seq)
+
+    def submit(text, request_id):
+        with SessionLocal() as db:
+            try:
+                submit_reverse_question_core(db, db.get(Interview, iid), db.get(User, uid),
+                                             text, request_id=request_id)
+                return "ok"
+            except HTTPException as exc:
+                return exc.status_code
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(submit, ["同时提交甲", "同时提交乙"],
+                                 ["reverse-concurrent-a", "reverse-concurrent-b"]))
+    # 两条请求都推导过 seq=1：唯一索引让其中一条落库，另一条被 409 拦下
+    assert outcomes.count("ok") == 1, outcomes
+    assert outcomes.count(409) == 1, outcomes
+    with SessionLocal() as db:
+        rows = db.query(InterviewReverseQuestion).filter_by(interview_id=iid).all()
+        assert [r.seq for r in rows] == [1]
+
+
+def test_reverse_phase_makes_no_ai_call(monkeypatch):
+    """D1 零成本定稿：反问整条链路不得触达 LLM（不花 token、不等生成、不产出编造的回答）。"""
+    uid, oid, aid, jid, cid, headers = users_and_job()
+    iid, qids = make_interview(uid, jid)
+    to_reverse(iid)
+
+    def explode(*args, **kwargs):
+        raise AssertionError("反问环节不应发起 AI 调用")
+
+    monkeypatch.setattr(ai_provider, "_call_llm_json", explode)
+    r = client.post(f"/api/v1/interviews/{iid}/reverse", headers=headers[0],
+                    json={"text": "团队最近半年遇到的最大挑战是什么？", "request_id": "reverse-noai-001"})
+    assert r.status_code == 200, r.text
+    data = r.json()["data"]
+    assert data["used_count"] == 1 and data["remaining"] == 2
+    # 契约里不再有 AI 回答与点评：反问记录就是候选人自己的提问
+    assert set(data["questions"][0].keys()) == {"seq", "candidate_text"}
+    assert not hasattr(ai_provider, "answer_reverse_question")
+    with SessionLocal() as db:
+        assert db.query(InterviewReverseQuestion).filter_by(interview_id=iid).count() == 1
 
 
 def test_competencies_are_per_skill_with_real_question_evidence(monkeypatch):
@@ -445,13 +540,13 @@ def test_pause_is_server_authoritative_and_terminal_answer_is_rejected(monkeypat
     assert client.post(f"/api/v1/interviews/{iid}/pause", headers=headers[0]).status_code == 200
     with SessionLocal() as db:
         interview = db.get(Interview, iid)
-        one = get_remaining_seconds(interview)
+        one = get_elapsed_seconds(interview)
         from app.services import interview_core
         class Later(datetime):
             @classmethod
             def utcnow(cls): return datetime.utcnow() + timedelta(hours=1)
         monkeypatch.setattr(interview_core, "datetime", Later)
-        assert get_remaining_seconds(interview) == one
+        assert get_elapsed_seconds(interview) == one
     assert client.post(f"/api/v1/interviews/{iid}/answer", headers=headers[0], json={"question_id": qids[0], "request_id": "paused-answer", "text": "回答"}).status_code == 409
     assert client.post(f"/api/v1/interviews/{iid}/abort", headers=headers[0]).status_code == 200
     assert client.post(f"/api/v1/interviews/{iid}/start", headers=headers[0]).status_code == 409
@@ -496,3 +591,127 @@ def test_versioned_migration_preserves_rows_and_cleans_only_once(tmp_path):
         command.upgrade(config, "head")
         assert connection.execute(text("SELECT speaking_rate FROM interview_answers WHERE id=7")).scalar() == 177
     old.dispose()
+
+
+def age_interview(interview_id, days=2, age_answers=True):
+    """把会话（含作答）整体拨旧，模拟用户关页面后遗留的僵尸场次。"""
+    stale = datetime.utcnow() - timedelta(days=days)
+    with SessionLocal() as db:
+        interview = db.get(Interview, interview_id)
+        interview.created_at = interview.started_at = stale
+        if age_answers:
+            db.query(InterviewAnswer).filter_by(interview_id=interview_id).update(
+                {"created_at": stale}, synchronize_session=False)
+        db.commit()
+
+
+def test_zombie_sweeper_settles_answered_and_cancels_empty(monkeypatch):
+    """D6：不再限制提交时间后，关页面遗留的进行中场次由后台清扫兜底收尾。"""
+    fake_models(monkeypatch)
+    uid, oid, aid, jid, cid, headers = users_and_job()
+    answered_id, answered_qids = make_interview(uid, jid, total=1)
+    empty_id, _ = make_interview(uid, jid, total=1)
+    active_id, active_qids = make_interview(uid, jid, total=2)
+    for iid, qids in ((answered_id, answered_qids), (active_id, active_qids)):
+        assert client.post(f"/api/v1/interviews/{iid}/answer", headers=headers[0],
+                           json={"question_id": qids[0], "request_id": f"sweep-answer-{iid}",
+                                 "text": "有内容的作答"}).status_code == 200
+    age_interview(answered_id)
+    age_interview(empty_id)
+    age_interview(active_id, age_answers=False)  # 建场很久但刚答过题：仍在进行中
+    with SessionLocal() as db:
+        stat = asyncio.run(sweep_zombie_interviews(db))
+    assert stat == {"settled": 1, "cancelled": 1, "skipped": 1}, stat
+    with SessionLocal() as db:
+        assert db.get(Interview, answered_id).status == "COMPLETED"
+        assert db.query(InterviewReport).filter_by(interview_id=answered_id).count() == 1
+        assert db.get(Interview, empty_id).status == "CANCELLED"
+        assert db.query(InterviewReport).filter_by(interview_id=empty_id).count() == 0
+        assert db.get(Interview, active_id).status == "IN_PROGRESS"
+        assert db.query(InterviewReport).filter_by(interview_id=active_id).count() == 0
+
+
+def test_interview_has_no_hard_deadline_anymore(monkeypatch):
+    """D6：整场只有正计时，超时很久也不影响继续作答与交卷。"""
+    fake_models(monkeypatch)
+    uid, oid, aid, jid, cid, headers = users_and_job()
+    iid, qids = make_interview(uid, jid, total=2)
+    with SessionLocal() as db:
+        interview = db.get(Interview, iid)
+        interview.started_at = datetime.utcnow() - timedelta(days=3)
+        interview.duration_minutes = 5
+        db.commit()
+    detail = client.get(f"/api/v1/interviews/{iid}", headers=headers[0]).json()["data"]
+    assert detail["elapsed_seconds"] > 5 * 60
+    assert client.post(f"/api/v1/interviews/{iid}/answer", headers=headers[0],
+                       json={"question_id": qids[0], "request_id": "no-deadline",
+                             "text": "很久之后仍可以作答"}).status_code == 200
+
+
+def test_question_bank_gate_and_professional_questions_never_borrow_categories():
+    """D2 + D3 的不变量：组卷只取已放行题目，专业题只在岗位大类内取，绝不跨类借题。"""
+    from app.services import paper_builder
+    from app.services.paper_builder import _candidate_tiers, build_paper, PROFESSIONAL
+    from scripts.seed_question_bank import seed_question_bank, release_batches
+
+    uid, oid, aid, jid, cid, headers = users_and_job()
+    with SessionLocal() as db:
+        stat = seed_question_bank(db)
+        assert stat["pending"] > 0, "新批次灌库后应处于待审状态"
+        fullstack = Job(company_id=cid, title="全栈工程师", category="全栈研发", city="北京",
+                        description="d", duties="d", requirements="r", skills_required="Vue3,Java",
+                        status="PUBLISHED")
+        db.add(fullstack); db.commit(); db.refresh(fullstack)
+
+        def bank_categories(total=5):
+            paper = build_paper(db, fullstack, "TECHNICAL", "MEDIUM", total, count_usage=False)
+            ids = [s.bank_id for s in paper.slots if s.bank_id]
+            rows = db.query(QuestionBank).filter(QuestionBank.id.in_(ids)).all() if ids else []
+            return {r.job_category for r in rows}, {r.review_status for r in rows}, paper
+
+        cats, statuses, gated = bank_categories()
+        assert "后端开发" not in cats and "前端开发" not in cats, f"专业题仍在跨大类借题：{cats}"
+        assert "PENDING" not in statuses, "未放行题目不应进入卷面"
+        assert gated.missing.get("PROFESSIONAL"), "本类题未放行时专业题应计入缺口交 AI 生成"
+
+        # D2：关联大类白名单已彻底移除，专业题只有本岗位大类一级候选
+        assert not hasattr(paper_builder, "RELATED_CATEGORIES")
+        assert _candidate_tiers(PROFESSIONAL, "全栈研发") == [["全栈研发"]]
+
+        released = release_batches(db, ["P0-4"])
+        assert released >= 20, f"P0-4 批次放行数量异常：{released}"
+        cats_after, statuses_after, _ = bank_categories()
+        assert "全栈研发" in cats_after and "PENDING" not in statuses_after
+        assert db.query(QuestionBank).filter(QuestionBank.job_category == "全栈研发",
+                                             QuestionBank.review_status == "PENDING").count() == 0
+
+
+def test_reverse_questions_never_move_the_total_score(monkeypatch):
+    """D1 的不变量：反问是候选人自由提问环节，只作报告素材，不计分也不扣分。"""
+    fake_models(monkeypatch)
+    uid, oid, aid, jid, cid, headers = users_and_job()
+    iid, qids = make_interview(uid, jid, total=1)
+    answered = client.post(f"/api/v1/interviews/{iid}/answer", headers=headers[0],
+                           json={"question_id": qids[0], "request_id": "reverse-score-1",
+                                 "text": "标准作答"}).json()["data"]
+    assert answered["phase"] == "REVERSE"
+    for index in range(2):
+        r = client.post(f"/api/v1/interviews/{iid}/reverse", headers=headers[0],
+                        json={"text": f"团队近期最大的挑战是什么？{index}",
+                              "request_id": f"reverse-score-q{index}"})
+        assert r.status_code == 200, r.text
+    rep = client.post(f"/api/v1/interviews/{iid}/finish", headers=headers[0]).json()["data"]
+    assert rep["total_score"] == answered["total_score"], "反问条数不应改变总分"
+    detail = client.get(f"/api/v1/interviews/{iid}/report", headers=headers[0]).json()["data"]
+    assert detail["total_score"] == answered["total_score"]
+    assert detail["reverse_summary"]["question_count"] == 2
+    assert all(set(q) == {"seq", "candidate_text"} for q in detail["reverse_summary"]["questions"])
+    label_to_key = {"专业基础": "professional", "相关性": "relevance", "完整性": "completeness",
+                    "逻辑结构": "logic", "实践深度": "depth", "沟通表达": "communication"}
+    assert set(detail["dimension_scores"]) == set(label_to_key)
+    assert all(v == answered["dimensions"][label_to_key[k]]
+               for k, v in detail["dimension_scores"].items()), "六维得分只应来自逐题作答"
+    with SessionLocal() as db:
+        # 能力画像只登记作答题目的技能证据，反问不产生 competency 记录
+        assert db.query(CompetencyHistory).filter_by(source_id=iid).count() == 1
+        assert db.query(UserCompetency).filter_by(user_id=uid).count() == 1

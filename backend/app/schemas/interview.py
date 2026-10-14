@@ -78,7 +78,7 @@ class InterviewOut(BaseModel):
     started_at: Optional[datetime] = None
     ended_at: Optional[datetime] = None
     created_at: datetime
-    remaining_seconds: Optional[int] = None  # 服务端口径整场剩余秒数（未开始为 None）
+    elapsed_seconds: Optional[int] = None  # 服务端口径整场已用秒数（未开始为 None，不限制提交时间）
     answered_count: int = 0                  # 已评分题数
     questions: List[InterviewQuestionOut] = []
     current_question: Optional[InterviewQuestionOut] = None
@@ -112,7 +112,7 @@ class AnswerEvaluationOut(BaseModel):
     is_followup: bool = False          # 下一题是否为 AI 评分触发的自适应追问题
     is_finished: bool = False          # 是否已答完全部题目（服务端判定）
     report_id: Optional[int] = None    # 自动结算生成的报告 ID
-    remaining_seconds: Optional[int] = None  # 服务端口径的整场剩余秒数
+    elapsed_seconds: Optional[int] = None  # 服务端口径的整场已用秒数（不限制提交时间）
     total_questions: Optional[int] = None    # 追问加题后的最新总题数
     # 单题超时（服务端判定）：超时轻扣分但不归零，空作答直接 0 分
     raw_score: Optional[float] = None
@@ -122,13 +122,12 @@ class AnswerEvaluationOut(BaseModel):
     is_skipped: bool = False  # 主动跳过，评语温和不影响能力画像
 
 class ReverseQuestionOut(BaseModel):
+    """反问记录：只登记候选人的提问，AI 不作答、不点评。"""
     seq: int
     candidate_text: str
-    ai_response: str
-    evaluation: Dict[str, Any] = {}
 
 class ReverseStateOut(BaseModel):
-    """反问环节状态：用于面试间渲染反问卡片与历史问答。"""
+    """反问环节状态：用于面试间渲染反问卡片与已提交的提问清单。"""
     phase: str = "QA"
     max_count: int = 3
     used_count: int = 0
@@ -137,6 +136,8 @@ class ReverseStateOut(BaseModel):
 
 class ReverseSubmitRequest(BaseModel):
     text: str = Field(min_length=1, max_length=2000)
+    # 与 InterviewAnswerRequest 同款幂等约定：重复 request_id 返回既有结果
+    request_id: str = Field(min_length=8, max_length=64, pattern=r"^[a-zA-Z0-9_-]+$")
 
 class InterviewReportOut(BaseModel):
     provenance: Dict[str, Any] = {}
@@ -159,7 +160,7 @@ class InterviewReportOut(BaseModel):
     questions_analysis: List[Dict[str, Any]] = []
     # 时间维度分析：逐题用时/限时/超时情况与汇总（服务端计时口径）
     time_analysis: Optional[Dict[str, Any]] = None
-    # 反问环节汇总（questions/answered_count/skipped/comment）；旧报告无此字段时为 None
+    # 反问环节汇总（questions[{seq,candidate_text}]/question_count/skipped/comment）；旧报告无此字段时为 None
     reverse_summary: Optional[Dict[str, Any]] = None
 
 class InterviewInvitationCreate(BaseModel):
