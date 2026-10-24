@@ -59,9 +59,6 @@
                 {{ report.performance_level || (report.total_score >= 80 ? '表现优异' : '表现良好') }}
               </el-tag>
             </div>
-            <p class="score-percentile">
-              本次技术实战对答超越同岗位 <strong>78%</strong> 的在线求职候选人
-            </p>
             <div class="short-summary-pill">
               <el-icon><Cpu /></el-icon>
               <span>AI 考官评语：{{ report.summary }}</span>
@@ -708,17 +705,6 @@ onMounted(() => {
   padding: 6px 14px;
   border-radius: 8px;
   font-weight: 700;
-}
-
-.score-percentile {
-  font-size: 14px;
-  color: var(--zh-text-body);
-  margin-bottom: 14px;
-}
-
-.score-percentile strong {
-  color: #2563EB;
-  font-size: 16px;
 }
 
 .short-summary-pill {
