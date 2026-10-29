@@ -249,13 +249,6 @@
                 class="room-textarea"
               />
 
-              <!-- Quick Template Demo Helper -->
-              <div class="demo-template-row">
-                <button type="button" class="template-btn" @click="insertTemplate">
-                  填入演示答案
-                </button>
-              </div>
-
               <!-- 答题草稿提示 -->
               <div v-if="draftRestored" class="draft-notice-bar">
                 <el-icon><InfoFilled /></el-icon>
@@ -748,12 +741,6 @@ const handlePauseResume = async () => {
     if (isPaused.value && transcribing.value) stopTranscription()
     ElMessage.info(isPaused.value ? '面试已暂停' : '已恢复答题')
   } catch { /* API 已显示错误 */ }
-}
-
-const insertTemplate = () => {
-  answerText.value =
-    "在我们的高并发业务场景中，核心热点数据全部由 Redis 承载。对于缓存击穿，我们主要采用 Redisson 互斥锁机制，仅让获取到锁的主线程去查库重建缓存，并利用 Watchdog 机制进行安全锁续期；对于双写一致性，采用了延迟双删结合 Canal 监听 MySQL Binlog 异步补偿的策略，将并发脏读窗口压低至毫秒级，压测 QPS 提升至 4200+。"
-  ElMessage.info('已填入标准实战回答模板')
 }
 
 const loadSession = async () => {
@@ -1422,24 +1409,6 @@ onUnmounted(() => {
 
 .room-textarea :deep(.el-textarea__inner:focus) {
   border-color: #2563EB !important;
-}
-
-.demo-template-row {
-  display: flex;
-  align-items: center;
-  margin-top: 8px;
-}
-
-.template-btn {
-  background: none;
-  border: none;
-  color: #2563EB;
-  font-size: 12px;
-  cursor: pointer;
-  padding: 0;
-}
-.template-btn:hover {
-  text-decoration: underline;
 }
 
 .submit-action-row {
