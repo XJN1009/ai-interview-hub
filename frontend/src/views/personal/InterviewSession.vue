@@ -107,7 +107,7 @@
             <div class="opening-speech">
               <h1 class="question-headline">我的问题问完了，你有什么想问我的吗？</h1>
               <p class="opening-line">
-                先把想问的记下来：本场反问只登记你的提问，AI 面试官不作答、不评分，也不消耗你的时间。
+                本场反问只记录你的提问，AI 面试官不作答，也不计入专业题评分。整场面试计时仍会继续，请合理安排时间。
                 你最多可以记
                 <strong>{{ reverseState?.max_count || 3 }}</strong>
                 条，也可以直接交卷。
@@ -126,12 +126,30 @@
             <div class="answer-box">
               <div class="answer-box-header">
                 <span class="answer-box-title">你想问的问题</span>
-                <span class="word-counter">{{ reverseText.length }} 字</span>
+                <span class="word-counter">{{ reverseText.length }} / 2000 字</span>
+              </div>
+              <div v-if="reverseState && reverseState.remaining > 0" class="reverse-suggestion-box">
+                <span class="reverse-suggestion-title">没想好问什么？可以选一个示例填入，再修改成你自己的问题：</span>
+                <div class="reverse-suggestion-list">
+                  <el-button
+                    v-for="suggestion in reverseSuggestions"
+                    :key="suggestion"
+                    size="small"
+                    plain
+                    class="reverse-suggestion-btn"
+                    :disabled="reverseSubmitting || !!reverseText.trim()"
+                    @click="fillReverseSuggestion(suggestion)"
+                  >
+                    {{ suggestion }}
+                  </el-button>
+                </div>
+                <span v-if="reverseText.trim()" class="reverse-suggestion-title">清空输入框后可重新选择示例，已有内容不会被覆盖。</span>
               </div>
               <el-input
                 v-model="reverseText"
                 type="textarea"
                 :rows="3"
+                maxlength="2000"
                 :disabled="!reverseState || reverseState.remaining <= 0"
                 placeholder="例如：团队目前最看重候选人的哪项能力？最近半年遇到的最大挑战是什么？"
                 class="room-textarea"
@@ -792,11 +810,23 @@ const startFromOpening = async () => {
   }
 }
 
-// ===== 反问环节（逐题作答结束后进入；只登记提问，不计分、不耗时、不调用 AI）=====
+// ===== 反问环节（逐题作答结束后进入；只登记提问，不计分、不调用 AI）=====
 const reverseState = ref<any>(null)
 const reverseText = ref('')
 const reverseSubmitting = ref(false)
 const isReverse = computed(() => session.value?.phase === 'REVERSE')
+const reverseSuggestions = [
+  '这个岗位入职后，最需要优先解决的问题是什么？',
+  '您会如何衡量新人前三个月的工作表现？',
+  '团队一般如何进行跨岗位协作？',
+  '这个岗位未来有哪些学习和成长机会？',
+]
+
+const fillReverseSuggestion = (suggestion: string) => {
+  // 只在输入为空时填入，避免覆盖已经手动输入的问题。
+  if (reverseSubmitting.value || !reverseState.value?.remaining || reverseText.value.trim()) return
+  reverseText.value = suggestion
+}
 
 // 逐题作答结束：拉取反问状态并切换界面（整场计时继续，反问不设单题倒计时）
 const enterReverse = async () => {
@@ -1577,6 +1607,35 @@ onUnmounted(() => {
 }
 
 /* ===== 反问环节 ===== */
+.reverse-suggestion-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.reverse-suggestion-title {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.reverse-suggestion-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.reverse-suggestion-list .reverse-suggestion-btn {
+  margin-left: 0;
+  height: auto;
+  max-width: 100%;
+  padding: 7px 10px;
+  white-space: normal;
+  text-align: left;
+  line-height: 1.5;
+}
+
 .reverse-thread {
   display: flex;
   flex-direction: column;
